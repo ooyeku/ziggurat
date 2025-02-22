@@ -184,6 +184,7 @@ pub fn errorResponse(code: StatusCode, message: []const u8) Response {
 }
 
 pub const logging = @import("utils/logging.zig");
+pub const metrics = @import("metrics.zig");
 
 test "server builder pattern" {
     const testing = std.testing;

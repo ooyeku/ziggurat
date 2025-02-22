@@ -19,6 +19,10 @@ pub fn main() !void {
         try logger.info("Initializing server...", .{});
     }
 
+    // Initialize metrics
+    try ziggurat.metrics.initGlobalMetrics(allocator, 1000); // Keep last 1000 requests
+    defer ziggurat.metrics.deinitGlobalMetrics();
+
     // Create and configure server
     var builder = ziggurat.ServerBuilder.init(allocator);
     var server = try builder
@@ -36,6 +40,7 @@ pub fn main() !void {
     // Add middleware
     try server.middleware(logRequests);
     try server.middleware(validateContentType);
+    try server.middleware(ziggurat.metrics.metricsMiddleware);
     if (logging.getGlobalLogger()) |logger| {
         try logger.debug("Middleware configured", .{});
     }
@@ -51,6 +56,18 @@ pub fn main() !void {
         try logger.info("Starting server...", .{});
     }
     try server.start();
+
+    // Print all stats
+    if (ziggurat.metrics.getGlobalMetrics()) |manager| {
+        try manager.printStats(std.io.getStdOut().writer());
+    }
+
+    // Get stats for specific endpoint
+    if (ziggurat.metrics.getGlobalMetrics()) |manager| {
+        if (try manager.getEndpointStats("GET", "/api/users")) |stats| {
+            std.debug.print("Average response time: {d:.2}ms\n", .{stats.getAverageDuration()});
+        }
+    }
 }
 
 fn logRequests(request: *ziggurat.request.Request) ?ziggurat.response.Response {

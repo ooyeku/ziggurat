@@ -8,6 +8,7 @@ const StatusCode = @import("../http/response.zig").StatusCode;
 const router = @import("../router/router.zig");
 const middleware = @import("../middleware/middleware.zig");
 const logging = @import("../utils/logging.zig");
+const metrics = @import("../metrics.zig");
 
 pub const HttpServer = struct {
     config: ServerConfig,
@@ -107,6 +108,9 @@ pub const HttpServer = struct {
         }
 
         try self.write(socket, formatted_response);
+
+        // Record metrics after sending response
+        metrics.recordResponseMetrics(&request, &response);
     }
 
     fn handleRequest(self: *HttpServer, request: *Request) !Response {
