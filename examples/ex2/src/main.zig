@@ -1,0 +1,259 @@
+//! By convention, main.zig is where your main function lives in the case that
+//! you are building an executable. If you are making a library, the convention
+//! is to delete this file and start with root.zig instead.
+
+const std = @import("std");
+const ziggurat = @import("ziggurat");
+
+// Simple in-memory cache for static files
+const CacheEntry = struct {
+    content: []const u8,
+    content_type: []const u8,
+    last_modified: i64,
+};
+
+var file_cache = std.StringHashMap(CacheEntry).init(std.heap.page_allocator);
+const public_dir = "public";
+
+pub fn main() !void {
+    // Initialize the server
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Initialize the logger
+    try ziggurat.logging.initGlobalLogger(allocator);
+    const logger = ziggurat.logging.getGlobalLogger().?;
+
+    // Create public directory if it doesn't exist
+    try std.fs.cwd().makePath(public_dir);
+
+    // Create some example static files
+    try createExampleFiles();
+
+    var builder = ziggurat.ServerBuilder.init(allocator);
+    var server = try builder
+        .host("127.0.0.1")
+        .port(8000)
+        .readTimeout(30000) // Longer timeout for file transfers
+        .writeTimeout(30000)
+        .build();
+    defer server.deinit();
+
+    // Add middleware
+    try server.middleware(logRequests);
+    try server.middleware(setCacheHeaders);
+
+    // Add routes
+    try server.get("/", handleIndex);
+    try server.get("/static/*", handleStaticFile);
+
+    try logger.info("Static file server running at http://127.0.0.1:8000", .{});
+    try server.start();
+}
+
+fn createExampleFiles() !void {
+    if (ziggurat.logging.getGlobalLogger()) |logger| {
+        try logger.debug("Creating example files in {s}/", .{public_dir});
+    }
+
+    // Create index.html
+    const index_content =
+        \\<!DOCTYPE html>
+        \\<html>
+        \\<head>
+        \\    <title>Ziggurat Static Server</title>
+        \\    <link rel="stylesheet" href="/static/style.css">
+        \\</head>
+        \\<body>
+        \\    <h1>Welcome to Ziggurat Static Server</h1>
+        \\    <p>This is a simple static file server example.</p>
+        \\    <script src="/static/main.js"></script>
+        \\</body>
+        \\</html>
+    ;
+    try std.fs.cwd().writeFile(.{
+        .sub_path = public_dir ++ "/index.html",
+        .data = index_content,
+    });
+    if (ziggurat.logging.getGlobalLogger()) |logger| {
+        try logger.debug("Created {s}/index.html", .{public_dir});
+    }
+
+    // Create style.css
+    const css_content =
+        \\body {
+        \\    font-family: Arial, sans-serif;
+        \\    max-width: 800px;
+        \\    margin: 0 auto;
+        \\    padding: 2rem;
+        \\    line-height: 1.6;
+        \\}
+        \\h1 { color: #2c3e50; }
+    ;
+    try std.fs.cwd().writeFile(.{
+        .sub_path = public_dir ++ "/style.css",
+        .data = css_content,
+    });
+    if (ziggurat.logging.getGlobalLogger()) |logger| {
+        try logger.debug("Created {s}/style.css", .{public_dir});
+    }
+
+    // Create main.js
+    const js_content =
+        \\console.log("Static server is running!");
+    ;
+    try std.fs.cwd().writeFile(.{
+        .sub_path = public_dir ++ "/main.js",
+        .data = js_content,
+    });
+    if (ziggurat.logging.getGlobalLogger()) |logger| {
+        try logger.debug("Created {s}/main.js", .{public_dir});
+    }
+}
+
+fn logRequests(request: *ziggurat.request.Request) ?ziggurat.response.Response {
+    if (ziggurat.logging.getGlobalLogger()) |logger| {
+        logger.info("[{s}] {s}", .{ @tagName(request.method), request.path }) catch {};
+    }
+    return null;
+}
+
+fn setCacheHeaders(request: *ziggurat.request.Request) ?ziggurat.response.Response {
+    _ = request;
+    // In a real app, set Cache-Control, ETag, etc.
+    return null;
+}
+
+fn handleIndex(request: *ziggurat.request.Request) ziggurat.response.Response {
+    _ = request;
+    const index_path = public_dir ++ "/index.html";
+
+    if (readFileFromCache(index_path)) |entry| {
+        return ziggurat.response.Response.init(
+            .ok,
+            entry.content_type,
+            entry.content,
+        );
+    }
+
+    const content = std.fs.cwd().readFileAlloc(
+        std.heap.page_allocator,
+        index_path,
+        1024 * 1024, // 1MB max
+    ) catch return ziggurat.response.Response.init(
+        .not_found,
+        "text/plain",
+        "Index file not found",
+    );
+
+    // Cache the file
+    file_cache.put(index_path, .{
+        .content = content,
+        .content_type = "text/html",
+        .last_modified = std.time.timestamp(),
+    }) catch {};
+
+    return ziggurat.response.Response.init(
+        .ok,
+        "text/html",
+        content,
+    );
+}
+
+fn handleStaticFile(request: *ziggurat.request.Request) ziggurat.response.Response {
+    // Get the file path relative to the public directory
+    const relative_path = request.path[7..]; // Remove "/static/" prefix
+
+    // Validate the path to prevent directory traversal
+    for (relative_path) |char| {
+        if (char == '.') {
+            return ziggurat.response.Response.init(
+                .bad_request,
+                "text/plain",
+                "Invalid path",
+            );
+        }
+    }
+
+    // Construct the full path
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const file_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ public_dir, relative_path }) catch
+        return ziggurat.response.Response.init(
+        .internal_server_error,
+        "text/plain",
+        "Path too long",
+    );
+
+    if (ziggurat.logging.getGlobalLogger()) |logger| {
+        logger.debug("Serving static file: {s}", .{file_path}) catch {};
+    }
+
+    if (readFileFromCache(file_path)) |entry| {
+        return ziggurat.response.Response.init(
+            .ok,
+            entry.content_type,
+            entry.content,
+        );
+    }
+
+    const content = std.fs.cwd().readFileAlloc(
+        std.heap.page_allocator,
+        file_path,
+        1024 * 1024, // 1MB max
+    ) catch return ziggurat.response.Response.init(
+        .not_found,
+        "text/plain",
+        "File not found",
+    );
+
+    const content_type = getContentType(file_path);
+
+    // Cache the file
+    file_cache.put(file_path, .{
+        .content = content,
+        .content_type = content_type,
+        .last_modified = std.time.timestamp(),
+    }) catch {};
+
+    return ziggurat.response.Response.init(
+        .ok,
+        content_type,
+        content,
+    );
+}
+
+fn readFileFromCache(path: []const u8) ?CacheEntry {
+    if (file_cache.get(path)) |entry| {
+        // In a real app, check if cache is stale
+        return entry;
+    }
+    return null;
+}
+
+fn getContentType(path: []const u8) []const u8 {
+    if (std.mem.endsWith(u8, path, ".html")) return "text/html";
+    if (std.mem.endsWith(u8, path, ".css")) return "text/css";
+    if (std.mem.endsWith(u8, path, ".js")) return "application/javascript";
+    if (std.mem.endsWith(u8, path, ".png")) return "image/png";
+    if (std.mem.endsWith(u8, path, ".jpg") or std.mem.endsWith(u8, path, ".jpeg")) return "image/jpeg";
+    return "application/octet-stream";
+}
+
+test "simple test" {
+    var list = std.ArrayList(i32).init(std.testing.allocator);
+    defer list.deinit(); // Try commenting this out and see if zig detects the memory leak!
+    try list.append(42);
+    try std.testing.expectEqual(@as(i32, 42), list.pop());
+}
+
+test "fuzz example" {
+    const Context = struct {
+        fn testOne(context: @This(), input: []const u8) anyerror!void {
+            _ = context;
+            // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
+            try std.testing.expect(!std.mem.eql(u8, "canyoufindme", input));
+        }
+    };
+    try std.testing.fuzz(Context{}, Context.testOne, .{});
+}
