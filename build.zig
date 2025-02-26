@@ -34,10 +34,9 @@ pub fn build(b: *std.Build) void {
     // Now, we will create a static library based on the module we created above.
     // This creates a `std.Build.Step.Compile`, which is the build step responsible
     // for actually invoking the compiler.
-    const lib = b.addLibrary(.{
-        .linkage = .static,
+    const lib = b.addStaticLibrary(.{
         .name = "ziggurat",
-        .root_module = lib_mod,
+        .root_module = exe_mod,
     });
 
     // This declares intent for the library to be installed into the standard
@@ -128,22 +127,20 @@ pub fn build(b: *std.Build) void {
 
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
-    const lib_unit_tests = b.addTest(.{
-        .root_module = lib_mod,
+    const main_tests = b.addTest(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
     });
 
-    const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
+    // Add the ziggurat_lib module to the test
+    main_tests.root_module.addImport("ziggurat_lib", lib_mod);
 
-    const exe_unit_tests = b.addTest(.{
-        .root_module = exe_mod,
-    });
+    const run_main_tests = b.addRunArtifact(main_tests);
 
-    const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
-
-    // Similar to creating the run step earlier, this exposes a `test` step to
-    // the `zig build --help` menu, providing a way for the user to request
-    // running the unit tests.
-    const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_lib_unit_tests.step);
-    test_step.dependOn(&run_exe_unit_tests.step);
+    // This creates a build step. It will be visible in the `zig build --help` menu,
+    // and can be selected like this: `zig build test`
+    // This will evaluate the `test` step rather than the default, which is "install".
+    const test_step = b.step("test", "Run library tests");
+    test_step.dependOn(&run_main_tests.step);
 }
