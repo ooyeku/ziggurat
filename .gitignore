@@ -3,3 +3,4 @@ zig-out
 public/
 static/
 .gitignore
+.zigversion
