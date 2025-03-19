@@ -33,9 +33,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
-
     run_cmd.step.dependOn(b.getInstallStep());
-
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
@@ -87,16 +85,16 @@ pub fn build(b: *std.Build) void {
     const run_ex2_step = b.step("run-ex2", "Run the Static File Server example");
     run_ex2_step.dependOn(&run_ex2_cmd.step);
 
-    const main_tests = b.addTest(.{
-        .root_source_file = b.path("src/main.zig"),
+    // Create a unified test step
+    const test_step = b.step("test", "Run all tests");
+
+    // Add a unit test for each file that contains tests
+    const unit_tests = b.addTest(.{
+        .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    main_tests.root_module.addImport("ziggurat_lib", lib_mod);
-
-    const run_main_tests = b.addRunArtifact(main_tests);
-
-    const test_step = b.step("test", "Run library tests");
-    test_step.dependOn(&run_main_tests.step);
+    const run_unit_tests = b.addRunArtifact(unit_tests);
+    test_step.dependOn(&run_unit_tests.step);
 }

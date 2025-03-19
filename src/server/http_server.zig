@@ -9,6 +9,7 @@ const router = @import("../router/router.zig");
 const middleware = @import("../middleware/middleware.zig");
 const logging = @import("../utils/logging.zig");
 const metrics = @import("../metrics.zig");
+const Tls = @import("tls.zig").Tls;
 
 pub const HttpServer = struct {
     config: ServerConfig,
@@ -16,6 +17,7 @@ pub const HttpServer = struct {
     listener: posix.socket_t,
     router: router.Router,
     middleware: middleware.Middleware,
+    tls: Tls,
 
     pub fn init(allocator: std.mem.Allocator, config: ServerConfig) !HttpServer {
         if (logging.getGlobalLogger()) |logger| {
@@ -33,8 +35,16 @@ pub const HttpServer = struct {
         try posix.bind(listener, &address.any, address.getOsSockLen());
         try posix.listen(listener, config.backlog);
 
+        // Initialize TLS if configured
+        var tls = try Tls.init(allocator, config.tls);
+        errdefer tls.deinit();
+
         if (logging.getGlobalLogger()) |logger| {
-            try logger.info("Server socket initialized and bound", .{});
+            if (config.tls.enabled) {
+                try logger.info("Server socket initialized with TLS support", .{});
+            } else {
+                try logger.info("Server socket initialized without TLS", .{});
+            }
         }
 
         return HttpServer{
@@ -43,6 +53,7 @@ pub const HttpServer = struct {
             .listener = listener,
             .router = router.Router.init(allocator),
             .middleware = middleware.Middleware.init(allocator),
+            .tls = tls,
         };
     }
 
@@ -52,12 +63,14 @@ pub const HttpServer = struct {
         }
         self.router.deinit();
         self.middleware.deinit();
+        self.tls.deinit();
         posix.close(self.listener);
     }
 
     pub fn start(self: *HttpServer) !void {
         if (logging.getGlobalLogger()) |logger| {
-            try logger.info("Server listening on http://{s}:{d}", .{ self.config.host, self.config.port });
+            const protocol = if (self.config.tls.enabled) "https" else "http";
+            try logger.info("Server listening on {s}://{s}:{d}", .{ protocol, self.config.host, self.config.port });
         }
 
         while (true) {
@@ -82,10 +95,13 @@ pub const HttpServer = struct {
         // Set socket timeouts
         try setTimeouts(socket, &self.config);
 
+        // Wrap socket with TLS if enabled
+        const secured_socket = try self.tls.wrapSocket(socket);
+
         var buf = try self.allocator.alloc(u8, self.config.buffer_size);
         defer self.allocator.free(buf);
 
-        const read = posix.read(socket, buf) catch |err| {
+        const read = self.tls.read(secured_socket, buf) catch |err| {
             if (logging.getGlobalLogger()) |logger| {
                 try logger.err("Error reading from socket: {}", .{err});
             }
@@ -108,7 +124,7 @@ pub const HttpServer = struct {
             const formatted_response = bad_request_response.format();
             defer std.heap.page_allocator.free(formatted_response);
 
-            _ = self.write(socket, formatted_response) catch |write_err| {
+            _ = self.writeTls(secured_socket, formatted_response) catch |write_err| {
                 if (logging.getGlobalLogger()) |logger| {
                     try logger.err("Error writing error response: {}", .{write_err});
                 }
@@ -147,7 +163,7 @@ pub const HttpServer = struct {
         }
 
         // Try to write response with error recovery
-        self.write(socket, formatted_response) catch |err| {
+        self.writeTls(secured_socket, formatted_response) catch |err| {
             if (logging.getGlobalLogger()) |logger| {
                 try logger.err("Error writing response: {}", .{err});
             }
@@ -180,11 +196,10 @@ pub const HttpServer = struct {
         );
     }
 
-    fn write(self: *HttpServer, socket: posix.socket_t, msg: []const u8) !void {
-        _ = self;
+    fn writeTls(self: *HttpServer, socket: posix.socket_t, msg: []const u8) !void {
         var pos: usize = 0;
         while (pos < msg.len) {
-            const written = try posix.write(socket, msg[pos..]);
+            const written = try self.tls.write(socket, msg[pos..]);
             if (written == 0) {
                 return error.Closed;
             }

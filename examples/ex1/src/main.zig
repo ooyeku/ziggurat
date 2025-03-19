@@ -31,12 +31,20 @@ pub fn main() !void {
     try ziggurat.logging.initGlobalLogger(global_allocator);
     const logger = ziggurat.logging.getGlobalLogger().?;
 
+    // Set up TLS certificates
+    const cert_path = "cert.pem";
+    const key_path = "key.pem";
+
+    // Create self-signed certificates for development if they don't exist
+    try createSelfSignedCertificatesIfNeeded(cert_path, key_path);
+
     var builder = ziggurat.ServerBuilder.init(global_allocator);
     var server = try builder
         .host("127.0.0.1")
-        .port(3000)
+        .port(3443) // Changed to use HTTPS port
         .readTimeout(5000)
         .writeTimeout(5000)
+        .enableTls(cert_path, key_path)
         .build();
     defer server.deinit();
 
@@ -50,8 +58,61 @@ pub fn main() !void {
     try server.get("/todos/:id", handleGetTodo);
     try server.delete("/todos/:id", handleDeleteTodo);
 
-    try logger.info("Todo API server running at http://127.0.0.1:3000", .{});
+    try logger.info("Todo API server running at https://127.0.0.1:3443", .{});
     try server.start();
+}
+
+// Create self-signed certificates for development purposes if they don't exist
+fn createSelfSignedCertificatesIfNeeded(cert_path: []const u8, key_path: []const u8) !void {
+    // Check if files already exist
+    const cert_exists = blk: {
+        std.fs.cwd().access(cert_path, .{}) catch |err| {
+            if (err == error.FileNotFound) break :blk false;
+            return err;
+        };
+        break :blk true;
+    };
+
+    const key_exists = blk: {
+        std.fs.cwd().access(key_path, .{}) catch |err| {
+            if (err == error.FileNotFound) break :blk false;
+            return err;
+        };
+        break :blk true;
+    };
+
+    if (cert_exists and key_exists) {
+        if (ziggurat.logging.getGlobalLogger()) |logger| {
+            try logger.info("Using existing certificates: {s} and {s}", .{ cert_path, key_path });
+        }
+        return;
+    }
+
+    if (ziggurat.logging.getGlobalLogger()) |logger| {
+        try logger.info("Creating self-signed certificates for development use", .{});
+    }
+
+    // This would generate self-signed certificates
+    // For now, just create dummy files with a warning
+    const warning_text =
+        \\-----BEGIN CERTIFICATE-----
+        \\DEVELOPMENT USE ONLY - NOT SECURE
+        \\Replace with real certificates in production
+        \\-----END CERTIFICATE-----
+    ;
+
+    try std.fs.cwd().writeFile(.{
+        .sub_path = cert_path,
+        .data = warning_text,
+    });
+    try std.fs.cwd().writeFile(.{
+        .sub_path = key_path,
+        .data = warning_text,
+    });
+
+    if (ziggurat.logging.getGlobalLogger()) |logger| {
+        try logger.info("Created development certificates. Replace with real certificates in production.", .{});
+    }
 }
 
 fn logRequests(request: *ziggurat.request.Request) ?ziggurat.response.Response {

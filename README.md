@@ -13,6 +13,7 @@ A modern, lightweight HTTP server framework for Zig that prioritizes performance
 - 📝 **Built-in Logging**: Comprehensive logging system with multiple levels
 - 🔄 **Request Routing**: Simple and flexible route handling
 - 📦 **Static File Serving**: Efficient static file serving with caching
+- 🔒 **TLS Support**: Secure your applications with HTTPS
 - ⚡ **Zero Dependencies**: Only requires Zig standard library
 
 ## Quick Start
@@ -41,6 +42,18 @@ fn handleRoot(request: *ziggurat.request.Request) ziggurat.response.Response {
     _ = request;
     return ziggurat.text("Hello, World!");
 }
+```
+
+## HTTPS Example
+
+To enable TLS/HTTPS in your server:
+
+```zig
+var server = try builder
+    .host("127.0.0.1")
+    .port(443)
+    .enableTls("path/to/cert.pem", "path/to/key.pem")
+    .build();
 ```
 
 ## Examples
