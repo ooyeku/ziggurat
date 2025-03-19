@@ -3,8 +3,8 @@
 # Default values - reduced concurrency and added more delay
 URL="http://127.0.0.1:8080"
 DURATION=30
-CONCURRENT=10  # Reduced from 50 to 10
-INTERVAL=0.5   # Increased from 0.1 to 0.5 seconds
+CONCURRENT=100  # Reduced from 50 to 10
+INTERVAL=0.01   # Increased from 0.1 to 0.5 seconds
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do

@@ -36,10 +36,89 @@ pub const Router = struct {
 
     pub fn matchRoute(self: *Router, request: *Request) ?Response {
         for (self.routes.items) |route| {
-            if (route.method == request.method and std.mem.eql(u8, route.path, request.path)) {
-                return route.handler(request);
+            if (route.method == request.method) {
+                if (pathMatches(route.path, request.path)) {
+                    // Extract parameters from path
+                    extractParams(route.path, request.path, request) catch |err| {
+                        if (@import("../utils/logging.zig").getGlobalLogger()) |logger| {
+                            logger.err("Failed to extract params: {}", .{err}) catch {};
+                        }
+                    };
+
+                    return route.handler(request);
+                }
             }
         }
         return null;
+    }
+
+    // Checks if a route pattern matches a request path
+    fn pathMatches(pattern: []const u8, path: []const u8) bool {
+        // Exact match
+        if (std.mem.eql(u8, pattern, path)) {
+            return true;
+        }
+
+        // Pattern contains parameters
+        if (std.mem.indexOf(u8, pattern, ":") != null) {
+            var pattern_segments = std.mem.splitScalar(u8, pattern, '/');
+            var path_segments = std.mem.splitScalar(u8, path, '/');
+
+            while (true) {
+                const pattern_next = pattern_segments.next();
+                const path_next = path_segments.next();
+
+                if (pattern_next == null and path_next == null) {
+                    return true; // Both iterators exhausted, match found
+                }
+
+                if (pattern_next == null or path_next == null) {
+                    return false; // One iterator exhausted before the other, no match
+                }
+
+                const pattern_segment = pattern_next.?;
+                const path_segment = path_next.?;
+
+                // If segment starts with ':', it's a parameter - always matches
+                if (pattern_segment.len > 0 and pattern_segment[0] == ':') {
+                    continue;
+                }
+
+                // Otherwise, segments must match exactly
+                if (!std.mem.eql(u8, pattern_segment, path_segment)) {
+                    return false;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    // Extracts path parameters and stores them in the request
+    fn extractParams(pattern: []const u8, path: []const u8, request: *Request) !void {
+        if (std.mem.indexOf(u8, pattern, ":") == null) {
+            return; // No parameters in pattern
+        }
+
+        var pattern_segments = std.mem.splitScalar(u8, pattern, '/');
+        var path_segments = std.mem.splitScalar(u8, path, '/');
+
+        while (true) {
+            const pattern_next = pattern_segments.next();
+            const path_next = path_segments.next();
+
+            if (pattern_next == null or path_next == null) {
+                break;
+            }
+
+            const pattern_segment = pattern_next.?;
+            const path_segment = path_next.?;
+
+            // If segment starts with ':', it's a parameter
+            if (pattern_segment.len > 0 and pattern_segment[0] == ':') {
+                const param_name = pattern_segment[1..];
+                try request.setUserData(param_name, path_segment);
+            }
+        }
     }
 };

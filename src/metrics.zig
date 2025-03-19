@@ -205,12 +205,34 @@ pub fn metricsMiddleware(request: *http.Request) ?http.Response {
     return null;
 }
 
+/// Function to be called at the start of request processing
+pub fn startRequestMetrics(request: *http.Request) !void {
+    if (global_metrics_manager) |_| {
+        const metric = RequestMetric.init(
+            request.path,
+            @tagName(request.method),
+            200, // Status code will be updated after response
+        );
+
+        try request.setUserData("metric_time", metric.start_time);
+        try request.setUserData("metric_path", request.path);
+        try request.setUserData("metric_method", @tagName(request.method));
+    }
+}
+
 /// Function to be called after response is sent
-pub fn recordResponseMetrics(request: *http.Request, response: *const http.Response) void {
+pub fn recordResponseMetrics(request: *http.Request, response: *const http.Response) !void {
     if (global_metrics_manager) |manager| {
-        const start_time = request.getUserData("metric_time", i64) orelse return;
-        const path = request.getUserData("metric_path", []const u8) orelse return;
-        const method = request.getUserData("metric_method", []const u8) orelse return;
+        // Extract stored metrics data
+        const start_time = request.getUserData("metric_time", i64) orelse {
+            // If missing, create a new metric with current time
+            const metric = RequestMetric.init(request.path, @tagName(request.method), @intFromEnum(response.status));
+            try manager.recordMetric(metric);
+            return;
+        };
+
+        const path = request.getUserData("metric_path", []const u8) orelse request.path;
+        const method = request.getUserData("metric_method", []const u8) orelse @tagName(request.method);
 
         var metric = RequestMetric{
             .path = path,
@@ -219,17 +241,11 @@ pub fn recordResponseMetrics(request: *http.Request, response: *const http.Respo
             .duration_ms = 0,
             .status_code = @intFromEnum(response.status),
         };
-        metric.complete();
-        manager.recordMetric(metric) catch {};
 
-        // Log the response time
-        if (logging.getGlobalLogger()) |logger| {
-            logger.info("{s} {s} completed in {d}ms with status {d}", .{
-                metric.method,
-                metric.path,
-                metric.duration_ms,
-                @intFromEnum(response.status),
-            }) catch {};
-        }
+        // Calculate duration
+        metric.complete();
+
+        // Record the metric
+        try manager.recordMetric(metric);
     }
 }

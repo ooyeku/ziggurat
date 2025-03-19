@@ -104,6 +104,34 @@ pub const Request = struct {
         return null;
     }
 
+    /// Get a URL parameter (from path params like /users/:id)
+    pub fn getParam(self: *Request, key: []const u8) ?[]const u8 {
+        return self.user_data.get(key);
+    }
+
+    /// Get a query parameter (from URL query string like ?page=1)
+    pub fn getQuery(self: *Request, key: []const u8) ?[]const u8 {
+        // Find the query string portion
+        if (std.mem.indexOf(u8, self.path, "?")) |query_start| {
+            const query_string = self.path[query_start + 1 ..];
+            var pairs = std.mem.splitScalar(u8, query_string, '&');
+
+            while (pairs.next()) |pair| {
+                var kv = std.mem.splitScalar(u8, pair, '=');
+                if (kv.next()) |k| {
+                    if (std.mem.eql(u8, k, key)) {
+                        if (kv.next()) |v| {
+                            return v;
+                        }
+                        return "";
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
     pub fn parse(self: *Request, raw_request: []const u8) !void {
         var lines = std.mem.splitSequence(u8, raw_request, "\r\n");
 

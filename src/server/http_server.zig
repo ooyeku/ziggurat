@@ -79,27 +79,66 @@ pub const HttpServer = struct {
     }
 
     fn handleConnection(self: *HttpServer, socket: posix.socket_t) !void {
+        // Set socket timeouts
         try setTimeouts(socket, &self.config);
 
-        var buf: [1024]u8 = undefined;
-        const read = posix.read(socket, &buf) catch |err| {
+        var buf = try self.allocator.alloc(u8, self.config.buffer_size);
+        defer self.allocator.free(buf);
+
+        const read = posix.read(socket, buf) catch |err| {
             if (logging.getGlobalLogger()) |logger| {
                 try logger.err("Error reading from socket: {}", .{err});
             }
             return;
         };
 
-        if (read == 0) return;
+        if (read == 0) return; // Empty request
 
         var request = Request.init(self.allocator);
         defer request.deinit();
-        try request.parse(buf[0..read]);
+
+        // Try to parse request, return 400 on failure
+        request.parse(buf[0..read]) catch |err| {
+            if (logging.getGlobalLogger()) |logger| {
+                try logger.err("Error parsing request: {}", .{err});
+            }
+
+            const bad_request_response = Response.init(.bad_request, "text/plain", "Bad Request - Invalid HTTP Request Format");
+
+            const formatted_response = bad_request_response.format();
+            defer std.heap.page_allocator.free(formatted_response);
+
+            _ = self.write(socket, formatted_response) catch |write_err| {
+                if (logging.getGlobalLogger()) |logger| {
+                    try logger.err("Error writing error response: {}", .{write_err});
+                }
+            };
+
+            return;
+        };
 
         if (logging.getGlobalLogger()) |logger| {
             try logger.debug("Processing request: {s} {s}", .{ @tagName(request.method), request.path });
         }
 
-        const response = try self.handleRequest(&request);
+        // Store metrics start time
+        if (metrics.getGlobalMetrics()) |_| {
+            metrics.startRequestMetrics(&request) catch |err| {
+                if (logging.getGlobalLogger()) |logger| {
+                    try logger.err("Error starting metrics: {}", .{err});
+                }
+            };
+        }
+
+        // Handle the request with error recovery
+        const response = self.handleRequest(&request) catch |err| {
+            if (logging.getGlobalLogger()) |logger| {
+                try logger.err("Error handling request: {}", .{err});
+            }
+
+            return Response.init(.internal_server_error, "text/plain", "Internal Server Error");
+        };
+
         const formatted_response = response.format();
         defer std.heap.page_allocator.free(formatted_response);
 
@@ -107,10 +146,20 @@ pub const HttpServer = struct {
             try logger.debug("Sending response: status={}", .{response.status});
         }
 
-        try self.write(socket, formatted_response);
+        // Try to write response with error recovery
+        self.write(socket, formatted_response) catch |err| {
+            if (logging.getGlobalLogger()) |logger| {
+                try logger.err("Error writing response: {}", .{err});
+            }
+            return;
+        };
 
         // Record metrics after sending response
-        metrics.recordResponseMetrics(&request, &response);
+        metrics.recordResponseMetrics(&request, &response) catch |err| {
+            if (logging.getGlobalLogger()) |logger| {
+                try logger.err("Error recording metrics: {}", .{err});
+            }
+        };
     }
 
     fn handleRequest(self: *HttpServer, request: *Request) !Response {

@@ -12,20 +12,26 @@ const Todo = struct {
     completed: bool,
 };
 
-var todos = std.ArrayList(Todo).init(std.heap.page_allocator);
+// Using a dedicated arena allocator for todo persistence
+var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+var arena: std.heap.ArenaAllocator = undefined;
+var todos: std.ArrayList(Todo) = undefined;
 var next_id: u32 = 1;
 
 pub fn main() !void {
-    // Initialize the server
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    // Initialize the allocators
+    const global_allocator = gpa.allocator();
+    arena = std.heap.ArenaAllocator.init(global_allocator);
+    defer arena.deinit();
 
-    // Initialize the logger
-    try ziggurat.logging.initGlobalLogger(allocator);
+    const arena_allocator = arena.allocator();
+    todos = std.ArrayList(Todo).init(arena_allocator);
+
+    // Initialize the server
+    try ziggurat.logging.initGlobalLogger(global_allocator);
     const logger = ziggurat.logging.getGlobalLogger().?;
 
-    var builder = ziggurat.ServerBuilder.init(allocator);
+    var builder = ziggurat.ServerBuilder.init(global_allocator);
     var server = try builder
         .host("127.0.0.1")
         .port(3000)
@@ -34,8 +40,9 @@ pub fn main() !void {
         .build();
     defer server.deinit();
 
-    // Add middleware for logging
+    // Add middleware for logging and error recovery
     try server.middleware(logRequests);
+    try server.middleware(recoverFromPanics);
 
     // Add routes
     try server.get("/todos", handleListTodos);
@@ -54,13 +61,31 @@ fn logRequests(request: *ziggurat.request.Request) ?ziggurat.response.Response {
     return null;
 }
 
+fn recoverFromPanics(request: *ziggurat.request.Request) ?ziggurat.response.Response {
+    _ = request;
+
+    // Check if we're in an error recovery path
+    if (@errorReturnTrace()) |_| {
+        if (ziggurat.logging.getGlobalLogger()) |logger| {
+            logger.err("Recovering from panic in request handler", .{}) catch {};
+        }
+
+        // Return a safe response
+        return ziggurat.errorResponse(
+            .internal_server_error,
+            "An internal server error occurred",
+        );
+    }
+
+    return null;
+}
+
 fn handleListTodos(request: *ziggurat.request.Request) ziggurat.response.Response {
     _ = request;
-    var json_str = std.ArrayList(u8).init(std.heap.page_allocator);
-    defer json_str.deinit();
+    var json_str = std.ArrayList(u8).init(arena.allocator());
 
     json_str.appendSlice("[") catch return ziggurat.errorResponse(
-        ziggurat.Status.internal_server_error,
+        .internal_server_error,
         "Failed to generate response",
     );
 
@@ -69,84 +94,172 @@ fn handleListTodos(request: *ziggurat.request.Request) ziggurat.response.Respons
         std.fmt.format(json_str.writer(),
             \\{{"id": {d}, "title": "{s}", "completed": {}}}{s}
         , .{ todo.id, todo.title, todo.completed, comma }) catch return ziggurat.errorResponse(
-            ziggurat.Status.internal_server_error,
+            .internal_server_error,
             "Failed to generate response",
         );
     }
 
     json_str.appendSlice("]") catch return ziggurat.errorResponse(
-        ziggurat.Status.internal_server_error,
+        .internal_server_error,
         "Failed to generate response",
     );
 
-    return ziggurat.json(json_str.items);
+    // Create a duplicated string that will persist after this function returns
+    const result = arena.allocator().dupe(u8, json_str.items) catch return ziggurat.errorResponse(
+        .internal_server_error,
+        "Failed to allocate response memory",
+    );
+
+    return ziggurat.json(result);
 }
 
 fn handleCreateTodo(request: *ziggurat.request.Request) ziggurat.response.Response {
     if (request.headers.get("Content-Type")) |content_type| {
         if (!std.mem.eql(u8, content_type, "application/json")) {
             return ziggurat.errorResponse(
-                ziggurat.Status.unsupported_media_type,
+                .unsupported_media_type,
                 "Only application/json is supported",
             );
         }
     }
 
+    // Try to parse title from request body
+    var title: []const u8 = "New Todo"; // Default title
+    if (request.body.len > 0) {
+        // Very simple JSON parsing - just looking for "title" field
+        if (std.mem.indexOf(u8, request.body, "\"title\"")) |title_pos| {
+            const after_title = title_pos + 7; // Skip "title":
+            if (after_title < request.body.len) {
+                // Find the first quote
+                var start_idx: usize = after_title;
+                while (start_idx < request.body.len) : (start_idx += 1) {
+                    if (request.body[start_idx] == '"') {
+                        start_idx += 1;
+                        break;
+                    }
+                }
+
+                // Find the end quote
+                var end_idx: usize = start_idx;
+                while (end_idx < request.body.len) : (end_idx += 1) {
+                    if (request.body[end_idx] == '"') {
+                        break;
+                    }
+                }
+
+                if (end_idx > start_idx and end_idx < request.body.len) {
+                    // Extract the title string
+                    const title_slice = request.body[start_idx..end_idx];
+                    title = title_slice;
+                }
+            }
+        }
+    }
+
+    // Safe copy of the title
+    const title_copy = arena.allocator().dupe(u8, title) catch return ziggurat.errorResponse(
+        .internal_server_error,
+        "Failed to allocate memory for todo",
+    );
+
     const todo = Todo{
         .id = next_id,
-        .title = "New Todo", // In a real app, parse this from request body
+        .title = title_copy,
         .completed = false,
     };
     next_id += 1;
 
     todos.append(todo) catch return ziggurat.errorResponse(
-        ziggurat.Status.internal_server_error,
+        .internal_server_error,
         "Failed to create todo",
     );
 
-    var json_str = std.ArrayList(u8).init(std.heap.page_allocator);
-    defer json_str.deinit();
+    var json_str = std.ArrayList(u8).init(arena.allocator());
 
     std.fmt.format(json_str.writer(),
         \\{{"id": {d}, "title": "{s}", "completed": {}, "message": "Todo created successfully"}}
     , .{ todo.id, todo.title, todo.completed }) catch return ziggurat.errorResponse(
-        ziggurat.Status.internal_server_error,
+        .internal_server_error,
         "Failed to generate response",
     );
 
-    return ziggurat.json(json_str.items);
+    // Create a duplicated string that will persist after this function returns
+    const result = arena.allocator().dupe(u8, json_str.items) catch return ziggurat.errorResponse(
+        .internal_server_error,
+        "Failed to allocate response memory",
+    );
+
+    return ziggurat.json(result);
 }
 
 fn handleGetTodo(request: *ziggurat.request.Request) ziggurat.response.Response {
-    _ = request;
-    // In a real app, parse the ID from request.path and find the todo
-    return ziggurat.json(
-        \\{"id": 1, "title": "Example Todo", "completed": false}
+    const id_param = request.getParam("id") orelse return ziggurat.errorResponse(
+        .bad_request,
+        "Missing id parameter",
+    );
+
+    const id = std.fmt.parseInt(u32, id_param, 10) catch return ziggurat.errorResponse(
+        .bad_request,
+        "Invalid id parameter",
+    );
+
+    // Find the todo with the matching ID
+    for (todos.items) |todo| {
+        if (todo.id == id) {
+            var json_str = std.ArrayList(u8).init(arena.allocator());
+
+            std.fmt.format(json_str.writer(),
+                \\{{"id": {d}, "title": "{s}", "completed": {}}}
+            , .{ todo.id, todo.title, todo.completed }) catch return ziggurat.errorResponse(
+                .internal_server_error,
+                "Failed to generate response",
+            );
+
+            // Create a duplicated string that will persist
+            const result = arena.allocator().dupe(u8, json_str.items) catch return ziggurat.errorResponse(
+                .internal_server_error,
+                "Failed to allocate response memory",
+            );
+
+            return ziggurat.json(result);
+        }
+    }
+
+    return ziggurat.errorResponse(
+        .not_found,
+        "Todo not found",
     );
 }
 
 fn handleDeleteTodo(request: *ziggurat.request.Request) ziggurat.response.Response {
-    _ = request;
-    // In a real app, parse the ID from request.path and delete the todo
-    return ziggurat.json(
-        \\{"message": "Todo deleted successfully"}
+    const id_param = request.getParam("id") orelse return ziggurat.errorResponse(
+        .bad_request,
+        "Missing id parameter",
     );
-}
 
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // Try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
+    const id = std.fmt.parseInt(u32, id_param, 10) catch return ziggurat.errorResponse(
+        .bad_request,
+        "Invalid id parameter",
+    );
 
-test "fuzz example" {
-    const Context = struct {
-        fn testOne(context: @This(), input: []const u8) anyerror!void {
-            _ = context;
-            // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
-            try std.testing.expect(!std.mem.eql(u8, "canyoufindme", input));
+    // Find and remove the todo with the matching ID
+    for (todos.items, 0..) |todo, index| {
+        if (todo.id == id) {
+            _ = todos.orderedRemove(index);
+
+            const message = arena.allocator().dupe(u8,
+                \\{"message": "Todo deleted successfully"}
+            ) catch return ziggurat.errorResponse(
+                .internal_server_error,
+                "Failed to allocate response memory",
+            );
+
+            return ziggurat.json(message);
         }
-    };
-    try std.testing.fuzz(Context{}, Context.testOne, .{});
+    }
+
+    return ziggurat.errorResponse(
+        .not_found,
+        "Todo not found",
+    );
 }
