@@ -34,15 +34,15 @@ pub fn main() !void {
     var builder = ziggurat.ServerBuilder.init(allocator);
     var server = try builder
         .host("127.0.0.1")
-        .port(8443) // Changed to standard HTTPS port
+        .port(8080) // Change to standard HTTP port
         .readTimeout(5000)
         .writeTimeout(5000)
-        .enableTls(cert_path, key_path)
+        // .enableTls(cert_path, key_path) // Comment out TLS for testing
         .build();
     defer server.deinit();
 
     if (logging.getGlobalLogger()) |logger| {
-        try logger.info("Server configured with host={s}, port={d}, TLS enabled", .{ "127.0.0.1", 8443 });
+        try logger.info("Server configured with host={s}, port={d}, TLS disabled", .{ "127.0.0.1", 8080 });
     }
 
     // Add middleware

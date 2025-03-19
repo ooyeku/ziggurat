@@ -4,3 +4,5 @@ public/
 static/
 .gitignore
 .zigversion
+cert.pem
+key.pem

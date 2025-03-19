@@ -42,8 +42,8 @@ max_time=0
 
 # Initialize associative array for response times
 declare -A response_times
-response_times["GET /"]=""
-response_times["POST /api/data"]=""
+response_times["GET_root"]=""
+response_times["POST_api_data"]=""
 
 # Function to make a request and measure time
 make_request() {
@@ -73,8 +73,12 @@ make_request() {
         echo "✗ $method $endpoint $status_code ${time_ms}ms"
     fi
     
-    # Store response time in array
-    response_times["$method $endpoint"]="${response_times["$method $endpoint"]} $time_ms"
+    # Store response time in array with safe keys
+    if [ "$endpoint" == "/" ]; then
+        response_times["${method}_root"]="${response_times["${method}_root"]} $time_ms"
+    elif [ "$endpoint" == "/api/data" ]; then
+        response_times["${method}_api_data"]="${response_times["${method}_api_data"]} $time_ms"
+    fi
     
     # Add delay to prevent overwhelming the server
     sleep $INTERVAL
@@ -82,9 +86,9 @@ make_request() {
 
 # Function to calculate statistics
 calculate_stats() {
-    local endpoint=$1
+    local endpoint_key=$1
     # Convert space-separated string to array
-    local times_str=${response_times["$endpoint"]}
+    local times_str=${response_times["$endpoint_key"]}
     local times=()
     for t in $times_str; do
         times+=($t)
@@ -155,7 +159,7 @@ echo
 
 # Calculate and display statistics for each endpoint
 echo "GET /:"
-calculate_stats "GET /"
+calculate_stats "GET_root"
 echo
 echo "POST /api/data:"
-calculate_stats "POST /api/data" 
+calculate_stats "POST_api_data" 
