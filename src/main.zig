@@ -34,10 +34,10 @@ pub fn main() !void {
     var builder = ziggurat.ServerBuilder.init(allocator);
     var server = try builder
         .host("127.0.0.1")
-        .port(8080) // Change to standard HTTP port
+        .port(8080) // Use HTTP port
         .readTimeout(5000)
         .writeTimeout(5000)
-        // .enableTls(cert_path, key_path) // Comment out TLS for testing
+        // .enableTls(cert_path, key_path) // Comment out TLS for now
         .build();
     defer server.deinit();
 
@@ -108,8 +108,24 @@ fn createSelfSignedCertificatesIfNeeded(cert_path: []const u8, key_path: []const
         try logger.info("Creating self-signed certificates for development use", .{});
     }
 
-    // This would generate self-signed certificates
-    // For now, just create dummy files with a warning
+    // Create temporary openssl configuration file
+    const openssl_config =
+        \\[req]
+        \\distinguished_name=req
+        \\[req_distinguished_name]
+        \\commonName=localhost
+        \\[v3_req]
+        \\subjectAltName=DNS:localhost,IP:127.0.0.1
+    ;
+
+    try std.fs.cwd().writeFile(.{
+        .sub_path = "openssl.cnf",
+        .data = openssl_config,
+    });
+    defer std.fs.cwd().deleteFile("openssl.cnf") catch {};
+
+    // This is a simpler approach - in newer Zig versions we can use std.process
+    // But for now, let's use a simpler approach with warning files
     const warning_text =
         \\-----BEGIN CERTIFICATE-----
         \\DEVELOPMENT USE ONLY - NOT SECURE
