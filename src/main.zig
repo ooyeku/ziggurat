@@ -56,6 +56,7 @@ pub fn main() !void {
     // Add routes
     try server.get("/", handleRoot);
     try server.post("/api/data", handleData);
+    try server.get("/metrics", handleMetrics);
     if (logging.getGlobalLogger()) |logger| {
         try logger.debug("Routes configured", .{});
     }
@@ -176,6 +177,21 @@ fn handleRoot(request: *ziggurat.request.Request) ziggurat.response.Response {
 fn handleData(request: *ziggurat.request.Request) ziggurat.response.Response {
     _ = request;
     return ziggurat.json("{\n  \"status\": \"success\"\n}");
+}
+
+fn handleMetrics(_: *ziggurat.request.Request) ziggurat.response.Response {
+    if (ziggurat.metrics.getGlobalMetrics()) |manager| {
+        var buffer: [4096]u8 = undefined;
+        var stream = std.io.fixedBufferStream(&buffer);
+        const writer = stream.writer();
+
+        manager.printStats(writer) catch {
+            return ziggurat.errorResponse(.internal_server_error, "Failed to generate metrics");
+        };
+
+        return ziggurat.text(stream.getWritten());
+    }
+    return ziggurat.errorResponse(.internal_server_error, "Metrics not initialized");
 }
 
 test "server configuration" {
