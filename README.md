@@ -1,4 +1,4 @@
-# Ziggurat 🏛️
+# Ziggurat
 
 A modern, lightweight HTTP server framework for Zig that prioritizes performance, safety, and developer experience.
 
@@ -7,14 +7,15 @@ A modern, lightweight HTTP server framework for Zig that prioritizes performance
 
 ## Features
 
-- 🚀 **Fast and Efficient**: Built with Zig's performance-first mindset
-- 🛡️ **Type-Safe API**: Leverage Zig's compile-time features for robust applications
-- 🧩 **Modular Design**: Easy-to-use middleware system
-- 📝 **Built-in Logging**: Comprehensive logging system with multiple levels
-- 🔄 **Request Routing**: Simple and flexible route handling
-- 📦 **Static File Serving**: Efficient static file serving with caching
-- 🔒 **TLS Support**: Secure your applications with HTTPS
-- ⚡ **Zero Dependencies**: Only requires Zig standard library
+- **Fast and Efficient**: Built with Zig's performance-first mindset
+- **Type-Safe API**: Leverage Zig's compile-time features for robust applications
+- **Modular Design**: Easy-to-use middleware system
+- **Built-in Logging**: Comprehensive logging system with multiple levels
+- **Request Routing**: Simple and flexible route handling
+- **Static File Serving**: Efficient static file serving with caching
+- **TLS Support**: Secure your applications with HTTPS
+- **Zero Dependencies**: Only requires Zig standard library
+- **Performance Metrics**: Built-in request and endpoint performance tracking
 
 ## Quick Start
 
@@ -27,10 +28,19 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Initialize logger
+    try ziggurat.logging.initGlobalLogger(allocator);
+    
+    // Initialize metrics
+    try ziggurat.metrics.initGlobalMetrics(allocator, 1000); // Keep last 1000 requests
+    defer ziggurat.metrics.deinitGlobalMetrics();
+
     var builder = ziggurat.ServerBuilder.init(allocator);
     var server = try builder
         .host("127.0.0.1")
         .port(8080)
+        .readTimeout(5000)
+        .writeTimeout(5000)
         .build();
     defer server.deinit();
 
@@ -76,7 +86,7 @@ var server = try builder
 
 ## Requirements
 
-- Zig 0.14.0 or later
+- Zig 0.14.0-dev.2577 or later
 
 ## Installation
 
@@ -92,9 +102,38 @@ Add to your `build.zig.zon`:
 }
 ```
 
+Then in your `build.zig`, add Ziggurat as a module:
+
+```zig
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    // Get the Ziggurat dependency
+    const ziggurat_dep = b.dependency("ziggurat", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Create your executable
+    const exe = b.addExecutable(.{
+        .name = "your-app",
+        .root_source_file = .{ .path = "src/main.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Add Ziggurat module
+    exe.addModule("ziggurat", ziggurat_dep.module("ziggurat"));
+    b.installArtifact(exe);
+}
+```
+
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request. Make sure to read our [Contributing Guide](CONTRIBUTING.md) first.
+Contributions are welcome. Please feel free to submit a Pull Request.
 
 ## License
 
