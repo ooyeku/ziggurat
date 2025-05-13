@@ -121,7 +121,12 @@ pub const HttpServer = struct {
 
             const bad_request_response = Response.init(.bad_request, "text/plain", "Bad Request - Invalid HTTP Request Format");
 
-            const formatted_response = bad_request_response.format();
+            const formatted_response = bad_request_response.format() catch |fmt_err| {
+                if (logging.getGlobalLogger()) |logger| {
+                    try logger.err("Error formatting response: {}", .{fmt_err});
+                }
+                return;
+            };
             defer std.heap.page_allocator.free(formatted_response);
 
             _ = self.writeTls(secured_socket, formatted_response) catch |write_err| {
@@ -155,7 +160,12 @@ pub const HttpServer = struct {
             return Response.init(.internal_server_error, "text/plain", "Internal Server Error");
         };
 
-        const formatted_response = response.format();
+        const formatted_response = response.format() catch |fmt_err| {
+            if (logging.getGlobalLogger()) |logger| {
+                try logger.err("Error formatting response: {}", .{fmt_err});
+            }
+            return;
+        };
         defer std.heap.page_allocator.free(formatted_response);
 
         if (logging.getGlobalLogger()) |logger| {

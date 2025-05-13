@@ -62,7 +62,7 @@ pub const Request = struct {
             self.allocator.free(self.body);
         }
     }
-
+    // Set user data for request - used for middleware
     pub fn setUserData(self: *Request, key: []const u8, value: anytype) !void {
         const key_owned = try self.allocator.dupe(u8, key);
         errdefer self.allocator.free(key_owned);
@@ -104,12 +104,12 @@ pub const Request = struct {
         return null;
     }
 
-    /// Get a URL parameter (from path params like /users/:id)
+    // Get a URL parameter (from path params like /users/:id)
     pub fn getParam(self: *Request, key: []const u8) ?[]const u8 {
         return self.user_data.get(key);
     }
 
-    /// Get a query parameter (from URL query string like ?page=1)
+    // Get a query parameter (from URL query string like ?page=1)
     pub fn getQuery(self: *Request, key: []const u8) ?[]const u8 {
         // Find the query string portion
         if (std.mem.indexOf(u8, self.path, "?")) |query_start| {
@@ -132,6 +132,7 @@ pub const Request = struct {
         return null;
     }
 
+    // Parse raw HTTP request
     pub fn parse(self: *Request, raw_request: []const u8) !void {
         var lines = std.mem.splitSequence(u8, raw_request, "\r\n");
 
@@ -162,3 +163,49 @@ pub const Request = struct {
         }
     }
 };
+
+test "parse request" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var request = Request.init(allocator);
+    defer request.deinit();
+
+    const raw_request = "GET /test HTTP/1.1\r\nHost: localhost:8080\r\n\r\n";
+    try request.parse(raw_request);
+
+    try testing.expectEqual(Method.GET, request.method);
+    try testing.expectEqualStrings("/test", request.path);
+}
+
+test "parse request with headers" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var request = Request.init(allocator);
+    defer request.deinit();
+
+    const raw_request = "GET /test HTTP/1.1\r\nHost: localhost:8080\r\nContent-Type: application/json\r\n\r\n";
+    try request.parse(raw_request);
+
+    try testing.expectEqual(Method.GET, request.method);
+    try testing.expectEqualStrings("/test", request.path);
+    try testing.expectEqualStrings("application/json", request.headers.get("Content-Type") orelse "");
+}
+
+test "parse request with body" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var request = Request.init(allocator);
+    defer request.deinit();
+
+    const raw_request = "GET /test HTTP/1.1\r\nHost: localhost:8080\r\nContent-Type: application/json\r\n\r\n{\"name\": \"John\"}";
+    try request.parse(raw_request);
+
+    try testing.expectEqual(Method.GET, request.method);
+    try testing.expectEqualStrings("/test", request.path);
+    try testing.expectEqualStrings("application/json", request.headers.get("Content-Type") orelse "");
+    try testing.expectEqualStrings("{\"name\": \"John\"}", request.body);
+}
+
