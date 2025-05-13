@@ -22,8 +22,8 @@ Add Ziggurat as a dependency in your `build.zig.zon`:
     .version = "0.1.0",
     .dependencies = .{
         .ziggurat = .{
-            .url = "https://github.com/yourusername/ziggurat/archive/refs/tags/v0.1.0.tar.gz",
-            // Add the appropriate hash for your version
+            .url = "https://github.com/ooyeku/ziggurat/archive/refs/tags/v0.1.0.tar.gz",
+            // TODO: Add the appropriate hash for your version
             .hash = "...",
         },
     },

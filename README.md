@@ -95,8 +95,8 @@ Add to your `build.zig.zon`:
 .{
     .dependencies = .{
         .ziggurat = .{
-            .url = "https://github.com/yourusername/ziggurat/archive/refs/tags/v0.1.0.tar.gz",
-            .hash = "...", // Add appropriate hash
+            .url = "https://github.com/ooyeku/ziggurat/archive/refs/tags/v0.1.0.tar.gz",
+            .hash = "...", // TODO: Add appropriate hash
         },
     },
 }
