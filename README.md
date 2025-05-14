@@ -2,20 +2,19 @@
 
 A modern, lightweight HTTP server framework for Zig that prioritizes performance, safety, and developer experience.
 
-[![Zig](https://img.shields.io/badge/Zig-0.14.0-orange.svg)](https://ziglang.org)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[Zig 0.14.0](https://ziglang.org) | [MIT License](LICENSE)
 
 ## Features
 
-- **Fast and Efficient**: Built with Zig's performance-first mindset
-- **Type-Safe API**: Leverage Zig's compile-time features for robust applications
-- **Modular Design**: Easy-to-use middleware system
-- **Built-in Logging**: Comprehensive logging system with multiple levels
-- **Request Routing**: Simple and flexible route handling
-- **Static File Serving**: Efficient static file serving with caching
-- **TLS Support**: Secure your applications with HTTPS
-- **Zero Dependencies**: Only requires Zig standard library
-- **Performance Metrics**: Built-in request and endpoint performance tracking
+- Fast and Efficient: Built with Zig's performance-first mindset
+- Type-Safe API: Leverage Zig's compile-time features for robust applications
+- Modular Design: Easy-to-use middleware system
+- Built-in Logging: Comprehensive logging system with multiple levels
+- Request Routing: Simple and flexible route handling
+- Static File Serving: Efficient static file serving with caching
+- TLS Support: Secure your applications with HTTPS
+- Zero Dependencies: Only requires Zig standard library
+- Performance Metrics: Built-in request and endpoint performance tracking
 
 ## Quick Start
 
@@ -68,21 +67,21 @@ var server = try builder
 
 ## Examples
 
-1. **Todo API** - A RESTful API example with JSON handling
+1. Todo API - A RESTful API example with JSON handling
    ```bash
    zig build run-ex1
    ```
 
-2. **Static File Server** - File serving with caching and security
+2. Static File Server - File serving with caching and security
    ```bash
    zig build run-ex2
    ```
 
 ## Documentation
 
-- [Usage Guide](docs/usage.md) - Comprehensive guide to using Ziggurat
-- [API Reference](docs/usage.md#api-reference) - Detailed API documentation
-- [Examples](examples/) - Example applications and use cases
+- [Usage Guide](docs/usage.md): Comprehensive guide to using Ziggurat
+- [API Reference](docs/usage.md#api-reference): Detailed API documentation
+- [Examples](examples/): Example applications and use cases
 
 ## Requirements
 
@@ -91,6 +90,7 @@ var server = try builder
 ## Installation
 
 Add to your `build.zig.zon`:
+
 ```zig
 .{
     .dependencies = .{
@@ -133,10 +133,9 @@ pub fn build(b: *std.Build) void {
 
 ## Contributing
 
-Contributions are welcome. Please feel free to submit a Pull Request.
+Contributions are welcome. Please submit pull requests following the project's code style and including appropriate tests.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
