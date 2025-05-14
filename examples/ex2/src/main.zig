@@ -31,12 +31,20 @@ pub fn main() !void {
     // Create some example static files
     try createExampleFiles();
 
+    // Set up TLS certificates
+    const cert_path = "cert.pem";
+    const key_path = "key.pem";
+
+    // Create self-signed certificates for development if they don't exist
+    try createSelfSignedCertificatesIfNeeded(cert_path, key_path);
+
     var builder = ziggurat.ServerBuilder.init(allocator);
     var server = try builder
         .host("127.0.0.1")
-        .port(8000)
+        .port(8443) // Changed to standard HTTPS port
         .readTimeout(30000) // Longer timeout for file transfers
         .writeTimeout(30000)
+        .enableTls(cert_path, key_path)
         .build();
     defer server.deinit();
 
@@ -48,8 +56,61 @@ pub fn main() !void {
     try server.get("/", handleIndex);
     try server.get("/static/*", handleStaticFile);
 
-    try logger.info("Static file server running at http://127.0.0.1:8000", .{});
+    try logger.info("Static file server running at https://127.0.0.1:8443", .{});
     try server.start();
+}
+
+// Create self-signed certificates for development purposes if they don't exist
+fn createSelfSignedCertificatesIfNeeded(cert_path: []const u8, key_path: []const u8) !void {
+    // Check if files already exist
+    const cert_exists = blk: {
+        std.fs.cwd().access(cert_path, .{}) catch |err| {
+            if (err == error.FileNotFound) break :blk false;
+            return err;
+        };
+        break :blk true;
+    };
+
+    const key_exists = blk: {
+        std.fs.cwd().access(key_path, .{}) catch |err| {
+            if (err == error.FileNotFound) break :blk false;
+            return err;
+        };
+        break :blk true;
+    };
+
+    if (cert_exists and key_exists) {
+        if (ziggurat.logging.getGlobalLogger()) |logger| {
+            try logger.info("Using existing certificates: {s} and {s}", .{ cert_path, key_path });
+        }
+        return;
+    }
+
+    if (ziggurat.logging.getGlobalLogger()) |logger| {
+        try logger.info("Creating self-signed certificates for development use", .{});
+    }
+
+    // This would generate self-signed certificates
+    // For now, just create dummy files with a warning
+    const warning_text =
+        \\-----BEGIN CERTIFICATE-----
+        \\DEVELOPMENT USE ONLY - NOT SECURE
+        \\Replace with real certificates in production
+        \\-----END CERTIFICATE-----
+    ;
+
+    try std.fs.cwd().writeFile(.{
+        .sub_path = cert_path,
+        .data = warning_text,
+    });
+    try std.fs.cwd().writeFile(.{
+        .sub_path = key_path,
+        .data = warning_text,
+    });
+
+    if (ziggurat.logging.getGlobalLogger()) |logger| {
+        try logger.info("Created development certificates. Replace with real certificates in production.", .{});
+    }
 }
 
 fn createExampleFiles() !void {
@@ -180,10 +241,10 @@ fn handleStaticFile(request: *ziggurat.request.Request) ziggurat.response.Respon
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const file_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ public_dir, relative_path }) catch
         return ziggurat.response.Response.init(
-        .internal_server_error,
-        "text/plain",
-        "Path too long",
-    );
+            .internal_server_error,
+            "text/plain",
+            "Path too long",
+        );
 
     if (ziggurat.logging.getGlobalLogger()) |logger| {
         logger.debug("Serving static file: {s}", .{file_path}) catch {};
@@ -238,22 +299,4 @@ fn getContentType(path: []const u8) []const u8 {
     if (std.mem.endsWith(u8, path, ".png")) return "image/png";
     if (std.mem.endsWith(u8, path, ".jpg") or std.mem.endsWith(u8, path, ".jpeg")) return "image/jpeg";
     return "application/octet-stream";
-}
-
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // Try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
-
-test "fuzz example" {
-    const Context = struct {
-        fn testOne(context: @This(), input: []const u8) anyerror!void {
-            _ = context;
-            // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
-            try std.testing.expect(!std.mem.eql(u8, "canyoufindme", input));
-        }
-    };
-    try std.testing.fuzz(Context{}, Context.testOne, .{});
 }

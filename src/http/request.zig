@@ -22,6 +22,7 @@ pub const Request = struct {
     headers: std.StringHashMap([]const u8),
     body: []const u8,
     allocator: std.mem.Allocator,
+    user_data: std.StringHashMap([]const u8),
 
     pub fn init(allocator: std.mem.Allocator) Request {
         return .{
@@ -30,6 +31,7 @@ pub const Request = struct {
             .headers = std.StringHashMap([]const u8).init(allocator),
             .body = "",
             .allocator = allocator,
+            .user_data = std.StringHashMap([]const u8).init(allocator),
         };
     }
 
@@ -47,12 +49,90 @@ pub const Request = struct {
         }
         self.headers.deinit();
 
+        // Free user data
+        var user_it = self.user_data.iterator();
+        while (user_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.user_data.deinit();
+
         // Free body if it was allocated
         if (self.body.len > 0) {
             self.allocator.free(self.body);
         }
     }
+    // Set user data for request - used for middleware
+    pub fn setUserData(self: *Request, key: []const u8, value: anytype) !void {
+        const key_owned = try self.allocator.dupe(u8, key);
+        errdefer self.allocator.free(key_owned);
 
+        // Convert value to string if it's not already a string
+        const value_str = switch (@TypeOf(value)) {
+            []const u8 => try self.allocator.dupe(u8, value),
+            else => blk: {
+                var buf: [256]u8 = undefined;
+                const str = try std.fmt.bufPrint(&buf, "{any}", .{value});
+                break :blk try self.allocator.dupe(u8, str);
+            },
+        };
+        errdefer self.allocator.free(value_str);
+
+        // Remove old value if it exists
+        if (self.user_data.get(key)) |old_value| {
+            self.allocator.free(old_value);
+        }
+
+        try self.user_data.put(key_owned, value_str);
+    }
+
+    pub fn getUserData(self: *Request, key: []const u8, comptime T: type) ?T {
+        if (self.user_data.get(key)) |value| {
+            // If T is a string slice, return it directly
+            if (T == []const u8) {
+                return value;
+            }
+            // Otherwise try to parse it
+            if (std.fmt.parseFloat(f64, value)) |float| {
+                return @intFromFloat(float);
+            } else |_| {}
+            if (std.fmt.parseInt(T, value, 10)) |int| {
+                return int;
+            } else |_| {}
+            return null;
+        }
+        return null;
+    }
+
+    // Get a URL parameter (from path params like /users/:id)
+    pub fn getParam(self: *Request, key: []const u8) ?[]const u8 {
+        return self.user_data.get(key);
+    }
+
+    // Get a query parameter (from URL query string like ?page=1)
+    pub fn getQuery(self: *Request, key: []const u8) ?[]const u8 {
+        // Find the query string portion
+        if (std.mem.indexOf(u8, self.path, "?")) |query_start| {
+            const query_string = self.path[query_start + 1 ..];
+            var pairs = std.mem.splitScalar(u8, query_string, '&');
+
+            while (pairs.next()) |pair| {
+                var kv = std.mem.splitScalar(u8, pair, '=');
+                if (kv.next()) |k| {
+                    if (std.mem.eql(u8, k, key)) {
+                        if (kv.next()) |v| {
+                            return v;
+                        }
+                        return "";
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    // Parse raw HTTP request
     pub fn parse(self: *Request, raw_request: []const u8) !void {
         var lines = std.mem.splitSequence(u8, raw_request, "\r\n");
 
@@ -83,3 +163,49 @@ pub const Request = struct {
         }
     }
 };
+
+test "parse request" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var request = Request.init(allocator);
+    defer request.deinit();
+
+    const raw_request = "GET /test HTTP/1.1\r\nHost: localhost:8080\r\n\r\n";
+    try request.parse(raw_request);
+
+    try testing.expectEqual(Method.GET, request.method);
+    try testing.expectEqualStrings("/test", request.path);
+}
+
+test "parse request with headers" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var request = Request.init(allocator);
+    defer request.deinit();
+
+    const raw_request = "GET /test HTTP/1.1\r\nHost: localhost:8080\r\nContent-Type: application/json\r\n\r\n";
+    try request.parse(raw_request);
+
+    try testing.expectEqual(Method.GET, request.method);
+    try testing.expectEqualStrings("/test", request.path);
+    try testing.expectEqualStrings("application/json", request.headers.get("Content-Type") orelse "");
+}
+
+test "parse request with body" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var request = Request.init(allocator);
+    defer request.deinit();
+
+    const raw_request = "GET /test HTTP/1.1\r\nHost: localhost:8080\r\nContent-Type: application/json\r\n\r\n{\"name\": \"John\"}";
+    try request.parse(raw_request);
+
+    try testing.expectEqual(Method.GET, request.method);
+    try testing.expectEqualStrings("/test", request.path);
+    try testing.expectEqualStrings("application/json", request.headers.get("Content-Type") orelse "");
+    try testing.expectEqualStrings("{\"name\": \"John\"}", request.body);
+}
+

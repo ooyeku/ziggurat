@@ -138,6 +138,12 @@ pub const ServerBuilder = struct {
         return self;
     }
 
+    /// Enable TLS with certificate and key files
+    pub fn enableTls(self: *Self, cert_file: []const u8, key_file: []const u8) *Self {
+        self.config.tls = @import("config/tls_config.zig").TlsConfig.enableTls(self.allocator, cert_file, key_file);
+        return self;
+    }
+
     /// Build and return a new Server instance
     pub fn build(self: *Self) !Server {
         return Server.init(self.*);
@@ -184,6 +190,7 @@ pub fn errorResponse(code: StatusCode, message: []const u8) Response {
 }
 
 pub const logging = @import("utils/logging.zig");
+pub const metrics = @import("metrics.zig");
 
 test "server builder pattern" {
     const testing = std.testing;
@@ -195,6 +202,20 @@ test "server builder pattern" {
     try testing.expectEqualStrings("0.0.0.0", builder.config.host);
     try testing.expectEqual(@as(u16, 3000), builder.config.port);
     try testing.expectEqual(@as(u32, 5000), builder.config.read_timeout_ms);
+}
+
+test "server builder with TLS" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var builder = ServerBuilder.init(allocator);
+    _ = builder.host("0.0.0.0").port(3000).enableTls("cert.pem", "key.pem");
+
+    try testing.expectEqualStrings("0.0.0.0", builder.config.host);
+    try testing.expectEqual(@as(u16, 3000), builder.config.port);
+    try testing.expect(builder.config.tls.enabled);
+    try testing.expectEqualStrings("cert.pem", builder.config.tls.cert_file.?);
+    try testing.expectEqualStrings("key.pem", builder.config.tls.key_file.?);
 }
 
 test "response helpers" {

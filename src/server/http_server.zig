@@ -8,6 +8,8 @@ const StatusCode = @import("../http/response.zig").StatusCode;
 const router = @import("../router/router.zig");
 const middleware = @import("../middleware/middleware.zig");
 const logging = @import("../utils/logging.zig");
+const metrics = @import("../metrics.zig");
+const Tls = @import("tls.zig").Tls;
 
 pub const HttpServer = struct {
     config: ServerConfig,
@@ -15,6 +17,7 @@ pub const HttpServer = struct {
     listener: posix.socket_t,
     router: router.Router,
     middleware: middleware.Middleware,
+    tls: Tls,
 
     pub fn init(allocator: std.mem.Allocator, config: ServerConfig) !HttpServer {
         if (logging.getGlobalLogger()) |logger| {
@@ -32,8 +35,16 @@ pub const HttpServer = struct {
         try posix.bind(listener, &address.any, address.getOsSockLen());
         try posix.listen(listener, config.backlog);
 
+        // Initialize TLS if configured
+        var tls = try Tls.init(allocator, config.tls);
+        errdefer tls.deinit();
+
         if (logging.getGlobalLogger()) |logger| {
-            try logger.info("Server socket initialized and bound", .{});
+            if (config.tls.enabled) {
+                try logger.info("Server socket initialized with TLS support", .{});
+            } else {
+                try logger.info("Server socket initialized without TLS", .{});
+            }
         }
 
         return HttpServer{
@@ -42,6 +53,7 @@ pub const HttpServer = struct {
             .listener = listener,
             .router = router.Router.init(allocator),
             .middleware = middleware.Middleware.init(allocator),
+            .tls = tls,
         };
     }
 
@@ -51,12 +63,14 @@ pub const HttpServer = struct {
         }
         self.router.deinit();
         self.middleware.deinit();
+        self.tls.deinit();
         posix.close(self.listener);
     }
 
     pub fn start(self: *HttpServer) !void {
         if (logging.getGlobalLogger()) |logger| {
-            try logger.info("Server listening on http://{s}:{d}", .{ self.config.host, self.config.port });
+            const protocol = if (self.config.tls.enabled) "https" else "http";
+            try logger.info("Server listening on {s}://{s}:{d}", .{ protocol, self.config.host, self.config.port });
         }
 
         while (true) {
@@ -78,35 +92,100 @@ pub const HttpServer = struct {
     }
 
     fn handleConnection(self: *HttpServer, socket: posix.socket_t) !void {
+        // Set socket timeouts
         try setTimeouts(socket, &self.config);
 
-        var buf: [1024]u8 = undefined;
-        const read = posix.read(socket, &buf) catch |err| {
+        // Wrap socket with TLS if enabled
+        const secured_socket = try self.tls.wrapSocket(socket);
+
+        var buf = try self.allocator.alloc(u8, self.config.buffer_size);
+        defer self.allocator.free(buf);
+
+        const read = self.tls.read(secured_socket, buf) catch |err| {
             if (logging.getGlobalLogger()) |logger| {
                 try logger.err("Error reading from socket: {}", .{err});
             }
             return;
         };
 
-        if (read == 0) return;
+        if (read == 0) return; // Empty request
 
         var request = Request.init(self.allocator);
         defer request.deinit();
-        try request.parse(buf[0..read]);
+
+        // Try to parse request, return 400 on failure
+        request.parse(buf[0..read]) catch |err| {
+            if (logging.getGlobalLogger()) |logger| {
+                try logger.err("Error parsing request: {}", .{err});
+            }
+
+            const bad_request_response = Response.init(.bad_request, "text/plain", "Bad Request - Invalid HTTP Request Format");
+
+            const formatted_response = bad_request_response.format() catch |fmt_err| {
+                if (logging.getGlobalLogger()) |logger| {
+                    try logger.err("Error formatting response: {}", .{fmt_err});
+                }
+                return;
+            };
+            defer std.heap.page_allocator.free(formatted_response);
+
+            _ = self.writeTls(secured_socket, formatted_response) catch |write_err| {
+                if (logging.getGlobalLogger()) |logger| {
+                    try logger.err("Error writing error response: {}", .{write_err});
+                }
+            };
+
+            return;
+        };
 
         if (logging.getGlobalLogger()) |logger| {
             try logger.debug("Processing request: {s} {s}", .{ @tagName(request.method), request.path });
         }
 
-        const response = try self.handleRequest(&request);
-        const formatted_response = response.format();
+        // Store metrics start time
+        if (metrics.getGlobalMetrics()) |_| {
+            metrics.startRequestMetrics(&request) catch |err| {
+                if (logging.getGlobalLogger()) |logger| {
+                    try logger.err("Error starting metrics: {}", .{err});
+                }
+            };
+        }
+
+        // Handle the request with error recovery
+        const response = self.handleRequest(&request) catch |err| {
+            if (logging.getGlobalLogger()) |logger| {
+                try logger.err("Error handling request: {}", .{err});
+            }
+
+            return Response.init(.internal_server_error, "text/plain", "Internal Server Error");
+        };
+
+        const formatted_response = response.format() catch |fmt_err| {
+            if (logging.getGlobalLogger()) |logger| {
+                try logger.err("Error formatting response: {}", .{fmt_err});
+            }
+            return;
+        };
         defer std.heap.page_allocator.free(formatted_response);
 
         if (logging.getGlobalLogger()) |logger| {
             try logger.debug("Sending response: status={}", .{response.status});
         }
 
-        try self.write(socket, formatted_response);
+        // Try to write response with error recovery
+        self.writeTls(secured_socket, formatted_response) catch |err| {
+            if (logging.getGlobalLogger()) |logger| {
+                try logger.err("Error writing response: {}", .{err});
+            }
+            return;
+        };
+
+        // Record metrics after sending response
+        metrics.recordResponseMetrics(&request, &response) catch |err| {
+            if (logging.getGlobalLogger()) |logger| {
+                try logger.err("Error recording metrics: {}", .{err});
+            }
+        };
     }
 
     fn handleRequest(self: *HttpServer, request: *Request) !Response {
@@ -127,11 +206,10 @@ pub const HttpServer = struct {
         );
     }
 
-    fn write(self: *HttpServer, socket: posix.socket_t, msg: []const u8) !void {
-        _ = self;
+    fn writeTls(self: *HttpServer, socket: posix.socket_t, msg: []const u8) !void {
         var pos: usize = 0;
         while (pos < msg.len) {
-            const written = try posix.write(socket, msg[pos..]);
+            const written = try self.tls.write(socket, msg[pos..]);
             if (written == 0) {
                 return error.Closed;
             }

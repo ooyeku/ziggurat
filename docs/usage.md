@@ -3,9 +3,11 @@
 Ziggurat is a lightweight, performant HTTP server framework for Zig that makes it easy to build web applications and APIs. This guide will walk you through setting up and using Ziggurat in your projects.
 
 ## Table of Contents
+
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Core Concepts](#core-concepts)
+- [Performance Metrics](#performance-metrics)
 - [Examples](#examples)
 - [API Reference](#api-reference)
 - [Best Practices](#best-practices)
@@ -20,8 +22,8 @@ Add Ziggurat as a dependency in your `build.zig.zon`:
     .version = "0.1.0",
     .dependencies = .{
         .ziggurat = .{
-            .url = "https://github.com/yourusername/ziggurat/archive/refs/tags/v0.1.0.tar.gz",
-            // Add the appropriate hash for your version
+            .url = "https://github.com/ooyeku/ziggurat/archive/refs/tags/v0.1.0.tar.gz",
+            // TODO: Add the appropriate hash for your version
             .hash = "...",
         },
     },
@@ -70,6 +72,13 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Initialize logger
+    try ziggurat.logging.initGlobalLogger(allocator);
+    
+    // Initialize metrics
+    try ziggurat.metrics.initGlobalMetrics(allocator, 1000); // Keep last 1000 requests
+    defer ziggurat.metrics.deinitGlobalMetrics();
+
     // Initialize the server
     var builder = ziggurat.ServerBuilder.init(allocator);
     var server = try builder
@@ -110,6 +119,7 @@ var server = try builder
     .port(8080)           // Set port number
     .readTimeout(5000)    // Set read timeout in milliseconds
     .writeTimeout(5000)   // Set write timeout in milliseconds
+    .enableTls("cert.pem", "key.pem")  // Optional: Enable HTTPS
     .build();
 ```
 
@@ -161,6 +171,49 @@ return ziggurat.text("Hello, World!");
 return ziggurat.errorResponse(.not_found, "Resource not found");
 ```
 
+## Performance Metrics
+
+Ziggurat includes a built-in metrics system for monitoring server performance.
+
+### Initialization
+
+```zig
+// Initialize metrics with capacity for 1000 recent requests
+try ziggurat.metrics.initGlobalMetrics(allocator, 1000);
+defer ziggurat.metrics.deinitGlobalMetrics();
+```
+
+### Tracking Request Metrics
+
+The metrics system automatically tracks:
+
+- Request duration
+- Status codes
+- Endpoint-specific statistics
+- Request timestamps
+
+### Accessing Metrics
+
+```zig
+// Get aggregate stats for a specific endpoint
+const stats = ziggurat.metrics.getEndpointStats("/api/users", "GET");
+
+// Get the average response time for an endpoint
+const avg_ms = stats.getAverageResponseTime();
+
+// Access recent request data
+const recent_requests = ziggurat.metrics.getRecentRequests(20); // Get last 20 requests
+```
+
+### Metrics Endpoints
+
+You can add a built-in metrics endpoint to your server:
+
+```zig
+// Add metrics endpoint
+try server.get("/metrics", ziggurat.metrics.handleMetricsRequest);
+```
+
 ## Examples
 
 ### 1. Todo API Server
@@ -168,6 +221,7 @@ return ziggurat.errorResponse(.not_found, "Resource not found");
 See [examples/ex1](examples/ex1) for a complete example of building a RESTful Todo API.
 
 Key features demonstrated:
+
 - Route handling
 - JSON responses
 - Request logging
@@ -175,6 +229,7 @@ Key features demonstrated:
 - In-memory data storage
 
 Run with:
+
 ```bash
 zig build run-ex1
 ```
@@ -184,6 +239,7 @@ zig build run-ex1
 See [examples/ex2](examples/ex2) for a complete example of serving static files.
 
 Key features demonstrated:
+
 - Static file serving
 - Content type detection
 - File caching
@@ -191,6 +247,7 @@ Key features demonstrated:
 - Custom middleware
 
 Run with:
+
 ```bash
 zig build run-ex2
 ```
@@ -207,30 +264,42 @@ const ServerConfig = struct {
     write_timeout_ms: u32,
     backlog: u31,
     buffer_size: usize,
+    enable_tls: bool,
+    cert_path: ?[]const u8,
+    key_path: ?[]const u8,
 };
 ```
 
 ### HTTP Methods
 
 Available HTTP methods:
+
 - GET
 - POST
 - PUT
 - DELETE
+- PATCH
+- HEAD
+- OPTIONS
 
 ### Status Codes
 
 Common status codes available via `ziggurat.Status`:
+
 - `.ok` (200)
 - `.created` (201)
+- `.no_content` (204)
 - `.bad_request` (400)
 - `.unauthorized` (401)
+- `.forbidden` (403)
 - `.not_found` (404)
+- `.method_not_allowed` (405)
 - `.internal_server_error` (500)
 
 ### Logging
 
 Ziggurat provides a built-in logging system with multiple levels:
+
 - debug
 - info
 - warn
@@ -264,11 +333,13 @@ try logger.debug("Debug message: {s}", .{some_value});
    - Use appropriate status codes
    - Implement proper request timeouts
    - Be careful with file paths in static file serving
+   - Use TLS in production environments
 
 4. **Performance**
    - Use the built-in caching mechanisms
    - Set appropriate buffer sizes
    - Configure timeouts based on your needs
+   - Monitor performance using the metrics system
 
 5. **Testing**
    - Write unit tests for your handlers

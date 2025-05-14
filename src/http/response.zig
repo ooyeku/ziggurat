@@ -1,4 +1,5 @@
 const std = @import("std");
+const testing = std.testing;
 
 pub const StatusCode = enum(u16) {
     ok = 200,
@@ -39,22 +40,42 @@ pub const Response = struct {
         };
     }
 
-    pub fn format(self: *const Response) []const u8 {
+    pub fn format(self: *const Response) ![]const u8 {
         return std.fmt.allocPrint(
             std.heap.page_allocator,
-            \\HTTP/1.1 {s}
-            \\Content-Type: {s}
-            \\Content-Length: {d}
-            \\
-            \\{s}
-            \\
-        ,
+            "HTTP/1.1 {s}\r\nContent-Type: {s}\r\nContent-Length: {d}\r\n\r\n{s}",
             .{
                 self.status.toString(),
                 self.content_type,
                 self.body.len,
                 self.body,
-            },
-        ) catch "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+            }
+        );
     }
+
 };
+
+
+test "format response" {    
+    var response = Response.init(.ok, "text/plain", "Hello, World!");
+
+    const formatted = try response.format();
+    defer std.heap.page_allocator.free(formatted);
+    try testing.expectEqualStrings("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nHello, World!", formatted);
+}
+
+test "format response with body" {    
+    var response = Response.init(.ok, "text/plain", "Hello, World!");
+
+    const formatted = try response.format();
+    defer std.heap.page_allocator.free(formatted);
+    try testing.expectEqualStrings("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nHello, World!", formatted);
+}
+
+test "format response with body and content type" {    
+    var response = Response.init(.ok, "text/html", "Hello, World!");
+
+    const formatted = try response.format();
+    defer std.heap.page_allocator.free(formatted);
+    try testing.expectEqualStrings("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 13\r\n\r\nHello, World!", formatted);
+}
