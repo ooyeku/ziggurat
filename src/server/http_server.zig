@@ -232,3 +232,4 @@ pub const HttpServer = struct {
         try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &std.mem.toBytes(write_timeout));
     }
 };
+

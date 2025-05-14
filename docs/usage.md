@@ -30,7 +30,7 @@ Add Ziggurat as a dependency in your `build.zig.zon`:
 }
 ```
 
-Then in your `build.zig`, add Ziggurat as a module:
+Then, integrate it into your `build.zig` file:
 
 ```zig
 const std = @import("std");
@@ -39,25 +39,43 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Get the Ziggurat dependency
+    // Get ziggurat as a dependency
     const ziggurat_dep = b.dependency("ziggurat", .{
         .target = target,
         .optimize = optimize,
     });
 
-    // Create your executable
-    const exe = b.addExecutable(.{
-        .name = "your-app",
-        .root_source_file = .{ .path = "src/main.zig" },
+    // Create your application module
+    const app_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    // Add Ziggurat module
-    exe.addModule("ziggurat", ziggurat_dep.module("ziggurat"));
+    // Import ziggurat into your application
+    app_mod.addImport("ziggurat", ziggurat_dep.module("ziggurat_lib"));
+
+    // Create and install executable
+    const exe = b.addExecutable(.{
+        .name = "your-app-name",
+        .root_module = app_mod,
+    });
+
     b.installArtifact(exe);
+
+    // Add run step
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
+    }
+
+    const run_step = b.step("run", "Run the app");
+    run_step.dependOn(&run_cmd.step);
 }
 ```
+
+For existing projects, you only need to add the dependency and import the module into your executable.
 
 ## Quick Start
 
@@ -345,4 +363,3 @@ try logger.debug("Debug message: {s}", .{some_value});
    - Write unit tests for your handlers
    - Test error conditions
    - Use the built-in test framework
-

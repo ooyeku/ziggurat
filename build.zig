@@ -90,7 +90,7 @@ pub fn build(b: *std.Build) void {
 
     // Add a unit test for each file that contains tests
     const unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path("src/test_main.zig"),
         .target = target,
         .optimize = optimize,
     });
