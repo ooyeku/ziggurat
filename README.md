@@ -4,17 +4,6 @@ A modern, lightweight HTTP server framework for Zig that prioritizes performance
 
 [Zig 0.14.0](https://ziglang.org) | [MIT License](LICENSE)
 
-## Features
-
-- Fast and Efficient: Built with Zig's performance-first mindset
-- Type-Safe API: Leverage Zig's compile-time features for robust applications
-- Modular Design: Easy-to-use middleware system
-- Built-in Logging: Comprehensive logging system with multiple levels
-- Request Routing: Simple and flexible route handling
-- Static File Serving: Efficient static file serving with caching
-- TLS Support: Secure your applications with HTTPS
-- Zero Dependencies: Only requires Zig standard library
-- Performance Metrics: Built-in request and endpoint performance tracking
 
 ## Quick Start
 
