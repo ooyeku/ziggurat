@@ -10,14 +10,13 @@ Ziggurat is a lightweight, performant HTTP server framework for Zig that makes i
 - [Performance Metrics](#performance-metrics)
 - [Examples](#examples)
 - [API Reference](#api-reference)
-- [Best Practices](#best-practices)
 
 ## Installation
 
 Run the `zig fetch` command to download and verify the dependency:
 
 ```bash
-zig fetch https://github.com/ooyeku/ziggurat/archive/refs/tags/v0.1.0.tar.gz
+zig fetch https://github.com/ooyeku/ziggurat/archive/refs/tags/v0.1.1.tar.gz
 ```
 
 **Optional Method I found to work:**
@@ -82,7 +81,7 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 }
-``` 
+```
 
 ## Quick Start
 
@@ -340,33 +339,3 @@ const logger = ziggurat.logging.getGlobalLogger().?;
 try logger.info("Server starting...", .{});
 try logger.debug("Debug message: {s}", .{some_value});
 ```
-
-## Best Practices
-
-1. **Memory Management**
-   - Always use an allocator appropriate for your use case
-   - Remember to free allocated memory
-   - Use `defer` for cleanup
-
-2. **Error Handling**
-   - Use Zig's error handling system
-   - Provide meaningful error messages
-   - Log errors appropriately
-
-3. **Security**
-   - Validate all user input
-   - Use appropriate status codes
-   - Implement proper request timeouts
-   - Be careful with file paths in static file serving
-   - Use TLS in production environments
-
-4. **Performance**
-   - Use the built-in caching mechanisms
-   - Set appropriate buffer sizes
-   - Configure timeouts based on your needs
-   - Monitor performance using the metrics system
-
-5. **Testing**
-   - Write unit tests for your handlers
-   - Test error conditions
-   - Use the built-in test framework
