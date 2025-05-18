@@ -57,11 +57,13 @@ var server = try builder
 ## Examples
 
 1. Todo API - A RESTful API example with JSON handling
+
    ```bash
    zig build run-ex1
    ```
 
 2. Static File Server - File serving with caching and security
+
    ```bash
    zig build run-ex2
    ```
@@ -78,47 +80,7 @@ var server = try builder
 
 ## Installation
 
-Add to your `build.zig.zon`:
-
-```zig
-.{
-    .dependencies = .{
-        .ziggurat = .{
-            .url = "https://github.com/ooyeku/ziggurat/archive/refs/tags/v0.1.0.tar.gz",
-            .hash = "...", // TODO: Add appropriate hash
-        },
-    },
-}
-```
-
-Then in your `build.zig`, add Ziggurat as a module:
-
-```zig
-const std = @import("std");
-
-pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
-
-    // Get the Ziggurat dependency
-    const ziggurat_dep = b.dependency("ziggurat", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
-    // Create your executable
-    const exe = b.addExecutable(.{
-        .name = "your-app",
-        .root_source_file = .{ .path = "src/main.zig" },
-        .target = target,
-        .optimize = optimize,
-    });
-
-    // Add Ziggurat module
-    exe.addModule("ziggurat", ziggurat_dep.module("ziggurat"));
-    b.installArtifact(exe);
-}
-```
+See [Usage Guide](docs/usage.md#installation) for more details.
 
 ## Contributing
 

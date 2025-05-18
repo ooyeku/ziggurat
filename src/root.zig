@@ -33,10 +33,18 @@ const Method = @import("http/request.zig").Method;
 const Response = @import("http/response.zig").Response;
 const StatusCode = @import("http/response.zig").StatusCode;
 
-/// Re-export core types that users will need
+
 pub const request = @import("http/request.zig");
 pub const response = @import("http/response.zig");
 pub const middleware = @import("middleware/middleware.zig");
+pub const http_error = @import("error/http_error.zig");
+pub const router = @import("router/router.zig");
+pub const config = struct {
+    pub const ServerConfig = @import("config/server_config.zig").ServerConfig;
+    pub const TlsConfig = @import("config/tls_config.zig").TlsConfig;
+};
+pub const logger = @import("utils/logging.zig");
+pub const metrics = @import("metrics.zig");
 
 /// High-level Server type that wraps the implementation details
 pub const Server = struct {
@@ -189,8 +197,6 @@ pub fn errorResponse(code: StatusCode, message: []const u8) Response {
     );
 }
 
-pub const logging = @import("utils/logging.zig");
-pub const metrics = @import("metrics.zig");
 
 test "server builder pattern" {
     const testing = std.testing;

@@ -10,27 +10,33 @@ Ziggurat is a lightweight, performant HTTP server framework for Zig that makes i
 - [Performance Metrics](#performance-metrics)
 - [Examples](#examples)
 - [API Reference](#api-reference)
-- [Best Practices](#best-practices)
 
 ## Installation
 
-Add Ziggurat as a dependency in your `build.zig.zon`:
+Run the `zig fetch` command to download and verify the dependency:
 
-```zig
-.{
-    .name = "your-project",
-    .version = "0.1.0",
-    .dependencies = .{
-        .ziggurat = .{
-            .url = "https://github.com/ooyeku/ziggurat/archive/refs/tags/v0.1.0.tar.gz",
-            // TODO: Add the appropriate hash for your version
-            .hash = "...",
-        },
-    },
-}
+```bash
+zig fetch https://github.com/ooyeku/ziggurat/archive/refs/tags/v0.1.1.tar.gz
 ```
 
-Then in your `build.zig`, add Ziggurat as a module:
+**Optional Method I found to work:**
+Create a `src/ziggurat.zig` file and add the following:
+
+```zig
+pub const ServerBuilder = @import("ziggurat").ServerBuilder;
+pub const Server = @import("ziggurat").Server;
+pub const ServerConfig = @import("ziggurat").ServerConfig;
+pub const Request = @import("ziggurat").Request;
+pub const Response = @import("ziggurat").Response;
+pub const Method = @import("ziggurat").Method;
+pub const StatusCode = @import("ziggurat").StatusCode;
+pub const Middleware = @import("ziggurat").Middleware;
+pub const logger = @import("ziggurat").logger;
+pub const metrics = @import("ziggurat").metrics;
+pub const router = @import("ziggurat").router;
+```
+
+Then, integrate it into your `build.zig` file:
 
 ```zig
 const std = @import("std");
@@ -39,23 +45,41 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Get the Ziggurat dependency
-    const ziggurat_dep = b.dependency("ziggurat", .{
+    const main_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    // Create your executable
+    const ziggurat_src_path = b.dependency("ziggurat", .{
+        .target = target,
+        .optimize = optimize,
+    }).path("src/root.zig");
+
+    const ziggurat_mod = b.createModule(.{
+        .root_source_file = ziggurat_src_path,
+        .target = target,
+        .optimize = optimize,
+    });
+
+    main_mod.addImport("ziggurat", ziggurat_mod);
+
     const exe = b.addExecutable(.{
-        .name = "your-app",
-        .root_source_file = .{ .path = "src/main.zig" },
-        .target = target,
-        .optimize = optimize,
+        .name = "ziggurat_test",
+        .root_module = main_mod,
     });
 
-    // Add Ziggurat module
-    exe.addModule("ziggurat", ziggurat_dep.module("ziggurat"));
+
     b.installArtifact(exe);
+
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
+    }
+
+    const run_step = b.step("run", "Run the app");
+    run_step.dependOn(&run_cmd.step);
 }
 ```
 
@@ -315,34 +339,3 @@ const logger = ziggurat.logging.getGlobalLogger().?;
 try logger.info("Server starting...", .{});
 try logger.debug("Debug message: {s}", .{some_value});
 ```
-
-## Best Practices
-
-1. **Memory Management**
-   - Always use an allocator appropriate for your use case
-   - Remember to free allocated memory
-   - Use `defer` for cleanup
-
-2. **Error Handling**
-   - Use Zig's error handling system
-   - Provide meaningful error messages
-   - Log errors appropriately
-
-3. **Security**
-   - Validate all user input
-   - Use appropriate status codes
-   - Implement proper request timeouts
-   - Be careful with file paths in static file serving
-   - Use TLS in production environments
-
-4. **Performance**
-   - Use the built-in caching mechanisms
-   - Set appropriate buffer sizes
-   - Configure timeouts based on your needs
-   - Monitor performance using the metrics system
-
-5. **Testing**
-   - Write unit tests for your handlers
-   - Test error conditions
-   - Use the built-in test framework
-

@@ -38,9 +38,6 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    const run_step = b.step("run", "Run the app");
-    run_step.dependOn(&run_cmd.step);
-
     const ex1_mod = b.createModule(.{
         .root_source_file = b.path("examples/ex1/src/main.zig"),
         .target = target,
@@ -59,9 +56,6 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         run_ex1_cmd.addArgs(args);
     }
-
-    const run_ex1_step = b.step("run-ex1", "Run the Todo API example");
-    run_ex1_step.dependOn(&run_ex1_cmd.step);
 
     const ex2_mod = b.createModule(.{
         .root_source_file = b.path("examples/ex2/src/main.zig"),
@@ -82,15 +76,9 @@ pub fn build(b: *std.Build) void {
         run_ex2_cmd.addArgs(args);
     }
 
-    const run_ex2_step = b.step("run-ex2", "Run the Static File Server example");
-    run_ex2_step.dependOn(&run_ex2_cmd.step);
-
-    // Create a unified test step
     const test_step = b.step("test", "Run all tests");
-
-    // Add a unit test for each file that contains tests
     const unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path("src/test_main.zig"),
         .target = target,
         .optimize = optimize,
     });
