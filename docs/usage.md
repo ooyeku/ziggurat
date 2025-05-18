@@ -14,20 +14,24 @@ Ziggurat is a lightweight, performant HTTP server framework for Zig that makes i
 
 ## Installation
 
-Add Ziggurat as a dependency in your `build.zig.zon`:
+Run the `zig fetch` command to download and verify the dependency:
+
+```bash
+zig fetch https://github.com/ooyeku/ziggurat/archive/refs/tags/v0.1.0.tar.gz
+```
+
+**Optional Method I found to work:**
+Create a `src/ziggurat.zig` file and add the following:
 
 ```zig
-.{
-    .name = "your-project",
-    .version = "0.1.0",
-    .dependencies = .{
-        .ziggurat = .{
-            .url = "https://github.com/ooyeku/ziggurat/archive/refs/tags/v0.1.0.tar.gz",
-            // TODO: Add the appropriate hash for your version
-            .hash = "...",
-        },
-    },
-}
+pub const ServerBuilder = @import("ziggurat").ServerBuilder;
+pub const Server = @import("ziggurat").Server;
+pub const ServerConfig = @import("ziggurat").ServerConfig;
+pub const Request = @import("ziggurat").Request;
+pub const Response = @import("ziggurat").Response;
+pub const Method = @import("ziggurat").Method;
+pub const StatusCode = @import("ziggurat").StatusCode;
+pub const Middleware = @import("ziggurat").Middleware;
 ```
 
 Then, integrate it into your `build.zig` file:
@@ -39,31 +43,33 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Get ziggurat as a dependency
-    const ziggurat_dep = b.dependency("ziggurat", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
-    // Create your application module
-    const app_mod = b.createModule(.{
+    const main_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    // Import ziggurat into your application
-    app_mod.addImport("ziggurat", ziggurat_dep.module("ziggurat_lib"));
+    const ziggurat_src_path = b.dependency("ziggurat", .{
+        .target = target,
+        .optimize = optimize,
+    }).path("src/root.zig");
 
-    // Create and install executable
-    const exe = b.addExecutable(.{
-        .name = "your-app-name",
-        .root_module = app_mod,
+    const ziggurat_mod = b.createModule(.{
+        .root_source_file = ziggurat_src_path,
+        .target = target,
+        .optimize = optimize,
     });
+
+    main_mod.addImport("ziggurat", ziggurat_mod);
+
+    const exe = b.addExecutable(.{
+        .name = "ziggurat_test",
+        .root_module = main_mod,
+    });
+
 
     b.installArtifact(exe);
 
-    // Add run step
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
@@ -73,9 +79,7 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 }
-```
-
-For existing projects, you only need to add the dependency and import the module into your executable.
+``` 
 
 ## Quick Start
 

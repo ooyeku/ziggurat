@@ -126,7 +126,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Add Ziggurat module
-    exe.addModule("ziggurat", ziggurat_dep.module("ziggurat"));
+    exe.root_module.addImport("ziggurat", ziggurat_dep.module("ziggurat"));
     b.installArtifact(exe);
 }
 ```
