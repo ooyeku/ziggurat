@@ -17,7 +17,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     // Initialize logger
-    try ziggurat.logging.initGlobalLogger(allocator);
+    try ziggurat.logger.initGlobalLogger(allocator);
     
     // Initialize metrics
     try ziggurat.metrics.initGlobalMetrics(allocator, 1000); // Keep last 1000 requests
