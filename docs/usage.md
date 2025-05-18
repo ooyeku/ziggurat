@@ -32,6 +32,9 @@ pub const Response = @import("ziggurat").Response;
 pub const Method = @import("ziggurat").Method;
 pub const StatusCode = @import("ziggurat").StatusCode;
 pub const Middleware = @import("ziggurat").Middleware;
+pub const logger = @import("ziggurat").logger;
+pub const metrics = @import("ziggurat").metrics;
+pub const router = @import("ziggurat").router;
 ```
 
 Then, integrate it into your `build.zig` file:
