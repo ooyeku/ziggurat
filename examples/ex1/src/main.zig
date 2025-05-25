@@ -28,8 +28,8 @@ pub fn main() !void {
     todos = std.ArrayList(Todo).init(arena_allocator);
 
     // Initialize the server
-    try ziggurat.logging.initGlobalLogger(global_allocator);
-    const logger = ziggurat.logging.getGlobalLogger().?;
+    try ziggurat.logger.initGlobalLogger(global_allocator);
+    const logger = ziggurat.logger.getGlobalLogger().?;
 
     // Set up TLS certificates
     const cert_path = "cert.pem";
@@ -82,13 +82,13 @@ fn createSelfSignedCertificatesIfNeeded(cert_path: []const u8, key_path: []const
     };
 
     if (cert_exists and key_exists) {
-        if (ziggurat.logging.getGlobalLogger()) |logger| {
+        if (ziggurat.logger.getGlobalLogger()) |logger| {
             try logger.info("Using existing certificates: {s} and {s}", .{ cert_path, key_path });
         }
         return;
     }
 
-    if (ziggurat.logging.getGlobalLogger()) |logger| {
+    if (ziggurat.logger.getGlobalLogger()) |logger| {
         try logger.info("Creating self-signed certificates for development use", .{});
     }
 
@@ -110,13 +110,13 @@ fn createSelfSignedCertificatesIfNeeded(cert_path: []const u8, key_path: []const
         .data = warning_text,
     });
 
-    if (ziggurat.logging.getGlobalLogger()) |logger| {
+    if (ziggurat.logger.getGlobalLogger()) |logger| {
         try logger.info("Created development certificates. Replace with real certificates in production.", .{});
     }
 }
 
 fn logRequests(request: *ziggurat.request.Request) ?ziggurat.response.Response {
-    if (ziggurat.logging.getGlobalLogger()) |logger| {
+    if (ziggurat.logger.getGlobalLogger()) |logger| {
         logger.info("[{s}] {s}", .{ @tagName(request.method), request.path }) catch {};
     }
     return null;
@@ -127,7 +127,7 @@ fn recoverFromPanics(request: *ziggurat.request.Request) ?ziggurat.response.Resp
 
     // Check if we're in an error recovery path
     if (@errorReturnTrace()) |_| {
-        if (ziggurat.logging.getGlobalLogger()) |logger| {
+        if (ziggurat.logger.getGlobalLogger()) |logger| {
             logger.err("Recovering from panic in request handler", .{}) catch {};
         }
 

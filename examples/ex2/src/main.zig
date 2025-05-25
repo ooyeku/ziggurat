@@ -22,8 +22,8 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     // Initialize the logger
-    try ziggurat.logging.initGlobalLogger(allocator);
-    const logger = ziggurat.logging.getGlobalLogger().?;
+    try ziggurat.logger.initGlobalLogger(allocator);
+    const logger = ziggurat.logger.getGlobalLogger().?;
 
     // Create public directory if it doesn't exist
     try std.fs.cwd().makePath(public_dir);
@@ -80,13 +80,13 @@ fn createSelfSignedCertificatesIfNeeded(cert_path: []const u8, key_path: []const
     };
 
     if (cert_exists and key_exists) {
-        if (ziggurat.logging.getGlobalLogger()) |logger| {
+        if (ziggurat.logger.getGlobalLogger()) |logger| {
             try logger.info("Using existing certificates: {s} and {s}", .{ cert_path, key_path });
         }
         return;
     }
 
-    if (ziggurat.logging.getGlobalLogger()) |logger| {
+    if (ziggurat.logger.getGlobalLogger()) |logger| {
         try logger.info("Creating self-signed certificates for development use", .{});
     }
 
@@ -108,13 +108,13 @@ fn createSelfSignedCertificatesIfNeeded(cert_path: []const u8, key_path: []const
         .data = warning_text,
     });
 
-    if (ziggurat.logging.getGlobalLogger()) |logger| {
+    if (ziggurat.logger.getGlobalLogger()) |logger| {
         try logger.info("Created development certificates. Replace with real certificates in production.", .{});
     }
 }
 
 fn createExampleFiles() !void {
-    if (ziggurat.logging.getGlobalLogger()) |logger| {
+    if (ziggurat.logger.getGlobalLogger()) |logger| {
         try logger.debug("Creating example files in {s}/", .{public_dir});
     }
 
@@ -137,7 +137,7 @@ fn createExampleFiles() !void {
         .sub_path = public_dir ++ "/index.html",
         .data = index_content,
     });
-    if (ziggurat.logging.getGlobalLogger()) |logger| {
+    if (ziggurat.logger.getGlobalLogger()) |logger| {
         try logger.debug("Created {s}/index.html", .{public_dir});
     }
 
@@ -156,7 +156,7 @@ fn createExampleFiles() !void {
         .sub_path = public_dir ++ "/style.css",
         .data = css_content,
     });
-    if (ziggurat.logging.getGlobalLogger()) |logger| {
+    if (ziggurat.logger.getGlobalLogger()) |logger| {
         try logger.debug("Created {s}/style.css", .{public_dir});
     }
 
@@ -168,13 +168,13 @@ fn createExampleFiles() !void {
         .sub_path = public_dir ++ "/main.js",
         .data = js_content,
     });
-    if (ziggurat.logging.getGlobalLogger()) |logger| {
+    if (ziggurat.logger.getGlobalLogger()) |logger| {
         try logger.debug("Created {s}/main.js", .{public_dir});
     }
 }
 
 fn logRequests(request: *ziggurat.request.Request) ?ziggurat.response.Response {
-    if (ziggurat.logging.getGlobalLogger()) |logger| {
+    if (ziggurat.logger.getGlobalLogger()) |logger| {
         logger.info("[{s}] {s}", .{ @tagName(request.method), request.path }) catch {};
     }
     return null;
@@ -246,7 +246,7 @@ fn handleStaticFile(request: *ziggurat.request.Request) ziggurat.response.Respon
             "Path too long",
         );
 
-    if (ziggurat.logging.getGlobalLogger()) |logger| {
+    if (ziggurat.logger.getGlobalLogger()) |logger| {
         logger.debug("Serving static file: {s}", .{file_path}) catch {};
     }
 
