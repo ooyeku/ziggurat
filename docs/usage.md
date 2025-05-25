@@ -81,7 +81,6 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 }
-```
 
 ## Quick Start
 
@@ -155,9 +154,23 @@ Route handlers receive a `Request` pointer and return a `Response`:
 fn handleRequest(request: *ziggurat.request.Request) ziggurat.response.Response {
     // Access request properties
     const method = request.method;        // HTTP method
-    const path = request.path;            // Request path
+    const path = request.path;            // Request path (optional: ?[]const u8)
+    const body = request.body;            // Request body (optional: ?[]const u8)
     const headers = request.headers;      // Request headers
-    const query = request.query;          // Query parameters
+    const page_param = request.getQuery("page"); // Example: get 'page' query parameter
+
+    // IMPORTANT: request.path and request.body are optional types (?[]const u8).
+    // Always handle the possibility of them being null, for example:
+    // const actual_path = request.path orelse "/";
+    // if (request.body) |actual_body| {
+    //     // process actual_body
+    // }
+
+    // Use page_param, e.g.:
+    if (page_param) |page| {
+        // process page parameter
+        _ = page;
+    }
 
     // Return a response
     return ziggurat.json("{ \"status\": \"success\" }");
@@ -338,4 +351,3 @@ const logger = ziggurat.logging.getGlobalLogger().?;
 // Log messages
 try logger.info("Server starting...", .{});
 try logger.debug("Debug message: {s}", .{some_value});
-```

@@ -98,8 +98,13 @@ pub const HttpServer = struct {
         // Wrap socket with TLS if enabled
         const secured_socket = try self.tls.wrapSocket(socket);
 
-        var buf = try self.allocator.alloc(u8, self.config.buffer_size);
-        defer self.allocator.free(buf);
+        // Initialize ArenaAllocator for this connection
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const req_allocator = arena.allocator();
+
+        var buf = try req_allocator.alloc(u8, self.config.buffer_size);
+        // defer self.allocator.free(buf); // Arena will handle this
 
         const read = self.tls.read(secured_socket, buf) catch |err| {
             if (logging.getGlobalLogger()) |logger| {
@@ -110,7 +115,7 @@ pub const HttpServer = struct {
 
         if (read == 0) return; // Empty request
 
-        var request = Request.init(self.allocator);
+        var request = Request.init(req_allocator);
         defer request.deinit();
 
         // Try to parse request, return 400 on failure
@@ -121,13 +126,12 @@ pub const HttpServer = struct {
 
             const bad_request_response = Response.init(.bad_request, "text/plain", "Bad Request - Invalid HTTP Request Format");
 
-            const formatted_response = bad_request_response.format() catch |fmt_err| {
+            const formatted_response = bad_request_response.format(req_allocator) catch |fmt_err| {
                 if (logging.getGlobalLogger()) |logger| {
                     try logger.err("Error formatting response: {}", .{fmt_err});
                 }
                 return;
             };
-            defer std.heap.page_allocator.free(formatted_response);
 
             _ = self.writeTls(secured_socket, formatted_response) catch |write_err| {
                 if (logging.getGlobalLogger()) |logger| {
@@ -138,8 +142,28 @@ pub const HttpServer = struct {
             return;
         };
 
+        // Early exit for unknown HTTP methods after successful parsing
+        if (request.method == .UNKNOWN) {
+            if (logging.getGlobalLogger()) |logger| {
+                try logger.warn("Malformed request: HTTP method UNKNOWN. The request path could not be interpreted as valid text.", .{});
+            }
+            const bad_method_response = Response.init(.bad_request, "text/plain", "Bad Request - Unknown or Malformed HTTP Method");
+            const formatted_bad_method_response = bad_method_response.format(req_allocator) catch |fmt_err| {
+                if (logging.getGlobalLogger()) |logger| {
+                    try logger.err("Error formatting bad_method_response: {}", .{fmt_err});
+                }
+                return; // Exit if we can't even format the error
+            };
+            _ = self.writeTls(secured_socket, formatted_bad_method_response) catch |write_err| {
+                if (logging.getGlobalLogger()) |logger| {
+                    try logger.err("Error writing bad_method_response: {}", .{write_err});
+                }
+            };
+            return; // Stop processing this request
+        }
+
         if (logging.getGlobalLogger()) |logger| {
-            try logger.debug("Processing request: {s} {s}", .{ @tagName(request.method), request.path });
+            try logger.debug("Processing request: {s} {?s}", .{ @tagName(request.method), request.path });
         }
 
         // Store metrics start time
@@ -156,17 +180,17 @@ pub const HttpServer = struct {
             if (logging.getGlobalLogger()) |logger| {
                 try logger.err("Error handling request: {}", .{err});
             }
-
+            // This response is short-lived, its body is a string literal.
+            // It will be formatted using req_allocator in the next step.
             return Response.init(.internal_server_error, "text/plain", "Internal Server Error");
         };
 
-        const formatted_response = response.format() catch |fmt_err| {
+        const formatted_response = response.format(req_allocator) catch |fmt_err| {
             if (logging.getGlobalLogger()) |logger| {
                 try logger.err("Error formatting response: {}", .{fmt_err});
             }
             return;
         };
-        defer std.heap.page_allocator.free(formatted_response);
 
         if (logging.getGlobalLogger()) |logger| {
             try logger.debug("Sending response: status={}", .{response.status});
@@ -232,4 +256,3 @@ pub const HttpServer = struct {
         try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &std.mem.toBytes(write_timeout));
     }
 };
-

@@ -117,7 +117,7 @@ fn createSelfSignedCertificatesIfNeeded(cert_path: []const u8, key_path: []const
 
 fn logRequests(request: *ziggurat.request.Request) ?ziggurat.response.Response {
     if (ziggurat.logger.getGlobalLogger()) |logger| {
-        logger.info("[{s}] {s}", .{ @tagName(request.method), request.path }) catch {};
+        logger.info("[{s}] {?s}", .{ @tagName(request.method), request.path }) catch {};
     }
     return null;
 }
@@ -186,32 +186,32 @@ fn handleCreateTodo(request: *ziggurat.request.Request) ziggurat.response.Respon
 
     // Try to parse title from request body
     var title: []const u8 = "New Todo"; // Default title
-    if (request.body.len > 0) {
-        // Very simple JSON parsing - just looking for "title" field
-        if (std.mem.indexOf(u8, request.body, "\"title\"")) |title_pos| {
-            const after_title = title_pos + 7; // Skip "title":
-            if (after_title < request.body.len) {
-                // Find the first quote
-                var start_idx: usize = after_title;
-                while (start_idx < request.body.len) : (start_idx += 1) {
-                    if (request.body[start_idx] == '"') {
-                        start_idx += 1;
-                        break;
+    if (request.body) |actual_body| {
+        if (actual_body.len > 0) {
+            // Very simple JSON parsing - just looking for "title" field
+            if (std.mem.indexOf(u8, actual_body, "\"title\"")) |title_pos| {
+                const after_title = title_pos + 7; // Skip "title":
+                if (after_title < actual_body.len) {
+                    // Find the first quote
+                    var start_idx: usize = after_title;
+                    while (start_idx < actual_body.len) : (start_idx += 1) {
+                        if (actual_body[start_idx] == '\"') {
+                            start_idx += 1;
+                            break;
+                        }
                     }
-                }
 
-                // Find the end quote
-                var end_idx: usize = start_idx;
-                while (end_idx < request.body.len) : (end_idx += 1) {
-                    if (request.body[end_idx] == '"') {
-                        break;
+                    // Find the end quote
+                    var end_idx: usize = start_idx;
+                    while (end_idx < actual_body.len) : (end_idx += 1) {
+                        if (actual_body[end_idx] == '\"') {
+                            break;
+                        }
                     }
-                }
 
-                if (end_idx > start_idx and end_idx < request.body.len) {
-                    // Extract the title string
-                    const title_slice = request.body[start_idx..end_idx];
-                    title = title_slice;
+                    if (end_idx > start_idx and end_idx < actual_body.len) {
+                        title = actual_body[start_idx..end_idx];
+                    }
                 }
             }
         }

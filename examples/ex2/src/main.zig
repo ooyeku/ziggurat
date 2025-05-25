@@ -175,7 +175,7 @@ fn createExampleFiles() !void {
 
 fn logRequests(request: *ziggurat.request.Request) ?ziggurat.response.Response {
     if (ziggurat.logger.getGlobalLogger()) |logger| {
-        logger.info("[{s}] {s}", .{ @tagName(request.method), request.path }) catch {};
+        logger.info("[{s}] {?s}", .{ @tagName(request.method), request.path }) catch {};
     }
     return null;
 }
@@ -223,18 +223,30 @@ fn handleIndex(request: *ziggurat.request.Request) ziggurat.response.Response {
 }
 
 fn handleStaticFile(request: *ziggurat.request.Request) ziggurat.response.Response {
+    const actual_path = request.path orelse return ziggurat.response.Response.init(
+        .not_found,
+        "text/plain",
+        "File not found",
+    );
+
+    if (!std.mem.startsWith(u8, actual_path, "/static/")) {
+        return ziggurat.response.Response.init(
+            .not_found,
+            "text/plain",
+            "File not found",
+        );
+    }
+
     // Get the file path relative to the public directory
-    const relative_path = request.path[7..]; // Remove "/static/" prefix
+    const relative_path = actual_path[8..]; // Remove "/static/" prefix (8 chars)
 
     // Validate the path to prevent directory traversal
-    for (relative_path) |char| {
-        if (char == '.') {
-            return ziggurat.response.Response.init(
-                .bad_request,
-                "text/plain",
-                "Invalid path",
-            );
-        }
+    if (std.mem.indexOf(u8, relative_path, "..")) |_| {
+        return ziggurat.response.Response.init(
+            .bad_request,
+            "text/plain",
+            "Invalid path: directory traversal attempt",
+        );
     }
 
     // Construct the full path

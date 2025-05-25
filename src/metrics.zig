@@ -193,13 +193,13 @@ pub fn deinitGlobalMetrics() void {
 pub fn metricsMiddleware(request: *http.Request) ?http.Response {
     if (global_metrics_manager) |_| {
         const metric = RequestMetric.init(
-            request.path,
+            request.path orelse "",
             @tagName(request.method),
             200, // Status code will be updated after response
         );
 
         request.setUserData("metric_time", metric.start_time) catch {};
-        request.setUserData("metric_path", request.path) catch {};
+        request.setUserData("metric_path", request.path orelse "") catch {};
         request.setUserData("metric_method", @tagName(request.method)) catch {};
     }
     return null;
@@ -209,13 +209,13 @@ pub fn metricsMiddleware(request: *http.Request) ?http.Response {
 pub fn startRequestMetrics(request: *http.Request) !void {
     if (global_metrics_manager) |_| {
         const metric = RequestMetric.init(
-            request.path,
+            request.path orelse "",
             @tagName(request.method),
             200, // Status code will be updated after response
         );
 
         try request.setUserData("metric_time", metric.start_time);
-        try request.setUserData("metric_path", request.path);
+        try request.setUserData("metric_path", request.path orelse "");
         try request.setUserData("metric_method", @tagName(request.method));
     }
 }
@@ -226,12 +226,12 @@ pub fn recordResponseMetrics(request: *http.Request, response: *const http.Respo
         // Extract stored metrics data
         const start_time = request.getUserData("metric_time", i64) orelse {
             // If missing, create a new metric with current time
-            const metric = RequestMetric.init(request.path, @tagName(request.method), @intFromEnum(response.status));
+            const metric = RequestMetric.init(request.path orelse "", @tagName(request.method), @intFromEnum(response.status));
             try manager.recordMetric(metric);
             return;
         };
 
-        const path = request.getUserData("metric_path", []const u8) orelse request.path;
+        const path = request.getUserData("metric_path", []const u8) orelse (request.path orelse "");
         const method = request.getUserData("metric_method", []const u8) orelse @tagName(request.method);
 
         var metric = RequestMetric{

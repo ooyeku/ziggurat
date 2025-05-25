@@ -37,15 +37,21 @@ pub const Router = struct {
     pub fn matchRoute(self: *Router, request: *Request) ?Response {
         for (self.routes.items) |route| {
             if (route.method == request.method) {
-                if (pathMatches(route.path, request.path)) {
-                    // Extract parameters from path
-                    extractParams(route.path, request.path, request) catch |err| {
-                        if (@import("../utils/logging.zig").getGlobalLogger()) |logger| {
-                            logger.err("Failed to extract params: {}", .{err}) catch {};
-                        }
-                    };
+                if (request.path) |req_path_value| {
+                    if (pathMatches(route.path, req_path_value)) {
+                        // Extract parameters from path
+                        extractParams(route.path, req_path_value, request) catch |err| {
+                            if (@import("../utils/logging.zig").getGlobalLogger()) |logger| {
+                                logger.err("Failed to extract params: {}", .{err}) catch {};
+                            }
+                        };
 
-                    return route.handler(request);
+                        return route.handler(request);
+                    }
+                } else {
+                    // request.path is null, cannot match path-based routes
+                    // Depending on design, might want to log this or handle routes with no path (e.g. OPTIONS *)
+                    // For now, if path is null, it simply won't match this kind of route.
                 }
             }
         }
@@ -117,7 +123,7 @@ pub const Router = struct {
             // If segment starts with ':', it's a parameter
             if (pattern_segment.len > 0 and pattern_segment[0] == ':') {
                 const param_name = pattern_segment[1..];
-                try request.setUserData(param_name, path_segment);
+                _ = try request.setUserData(param_name, path_segment);
             }
         }
     }

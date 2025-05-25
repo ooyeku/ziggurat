@@ -455,7 +455,7 @@ fn loggingMiddleware(request: *Request) ?Response {
 
 fn authMiddleware(request: *Request) ?Response {
     // Check if path is /admin and block it
-    if (std.mem.eql(u8, request.path, "/admin")) {
+    if (std.mem.eql(u8, request.path orelse "", "/admin")) {
         // Using .bad_request instead of .unauthorized since unauthorized (401) isn't defined in StatusCode enum
         return Response.init(.bad_request, "text/plain", "Unauthorized");
     }
