@@ -2,12 +2,12 @@
 const std = @import("std");
 
 // Import tests from various modules
-pub usingnamespace @import("tests/http_server_tests.zig");
+const http_server_tests = @import("tests/http_server_tests.zig");
 
 // Add more test imports here as the project grows
-// pub usingnamespace @import("tests/other_tests.zig");
+// const other_tests = @import("tests/other_tests.zig");
 
 test {
     // Reference all tests from imported modules
-    std.testing.refAllDeclsRecursive(@This());
+    std.testing.refAllDeclsRecursive(http_server_tests);
 }

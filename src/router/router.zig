@@ -17,17 +17,17 @@ pub const Router = struct {
 
     pub fn init(allocator: std.mem.Allocator) Router {
         return .{
-            .routes = std.ArrayList(Route).init(allocator),
+            .routes = std.ArrayList(Route){},
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *Router) void {
-        self.routes.deinit();
+        self.routes.deinit(self.allocator);
     }
 
     pub fn addRoute(self: *Router, method: Method, path: []const u8, handler: RouteHandler) !void {
-        try self.routes.append(.{
+        try self.routes.append(self.allocator, .{
             .method = method,
             .path = path,
             .handler = handler,
@@ -41,7 +41,7 @@ pub const Router = struct {
                     // Extract parameters from path
                     extractParams(route.path, request.path, request) catch |err| {
                         if (@import("../utils/logging.zig").getGlobalLogger()) |logger| {
-                            logger.err("Failed to extract params: {}", .{err}) catch {};
+                            logger.err("Failed to extract params: {any}", .{err}) catch {};
                         }
                     };
 

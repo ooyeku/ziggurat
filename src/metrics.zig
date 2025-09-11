@@ -74,7 +74,7 @@ pub const MetricsManager = struct {
             .allocator = allocator,
             .metrics_mutex = .{},
             .endpoint_stats = std.StringHashMap(EndpointStats).init(allocator),
-            .recent_requests = std.ArrayList(RequestMetric).init(allocator),
+            .recent_requests = std.ArrayList(RequestMetric){},
             .max_recent_requests = max_recent_requests,
         };
         return self;
@@ -86,7 +86,7 @@ pub const MetricsManager = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.endpoint_stats.deinit();
-        self.recent_requests.deinit();
+        self.recent_requests.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -120,7 +120,7 @@ pub const MetricsManager = struct {
             .duration_ms = metric.duration_ms,
             .status_code = metric.status_code,
         };
-        try self.recent_requests.append(metric_copy);
+        try self.recent_requests.append(self.allocator, metric_copy);
 
         if (self.recent_requests.items.len > self.max_recent_requests) {
             const removed = self.recent_requests.orderedRemove(0);

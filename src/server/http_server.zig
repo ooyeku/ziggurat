@@ -78,14 +78,14 @@ pub const HttpServer = struct {
             var client_address_len: posix.socklen_t = @sizeOf(net.Address);
             const socket = posix.accept(self.listener, &client_address.any, &client_address_len, 0) catch |err| {
                 if (logging.getGlobalLogger()) |logger| {
-                    try logger.err("Accept error: {}", .{err});
+                    try logger.err("Accept error: {any}", .{err});
                 }
                 continue;
             };
             defer posix.close(socket);
 
             if (logging.getGlobalLogger()) |logger| {
-                try logger.debug("Client connected from {}", .{client_address});
+                try logger.debug("Client connected from {any}", .{client_address});
             }
             try self.handleConnection(socket);
         }
@@ -103,7 +103,7 @@ pub const HttpServer = struct {
 
         const read = self.tls.read(secured_socket, buf) catch |err| {
             if (logging.getGlobalLogger()) |logger| {
-                try logger.err("Error reading from socket: {}", .{err});
+                try logger.err("Error reading from socket: {any}", .{err});
             }
             return;
         };
@@ -116,14 +116,14 @@ pub const HttpServer = struct {
         // Try to parse request, return 400 on failure
         request.parse(buf[0..read]) catch |err| {
             if (logging.getGlobalLogger()) |logger| {
-                try logger.err("Error parsing request: {}", .{err});
+                try logger.err("Error parsing request: {any}", .{err});
             }
 
             const bad_request_response = Response.init(.bad_request, "text/plain", "Bad Request - Invalid HTTP Request Format");
 
             const formatted_response = bad_request_response.format() catch |fmt_err| {
                 if (logging.getGlobalLogger()) |logger| {
-                    try logger.err("Error formatting response: {}", .{fmt_err});
+                    try logger.err("Error formatting response: {any}", .{fmt_err});
                 }
                 return;
             };
@@ -131,7 +131,7 @@ pub const HttpServer = struct {
 
             _ = self.writeTls(secured_socket, formatted_response) catch |write_err| {
                 if (logging.getGlobalLogger()) |logger| {
-                    try logger.err("Error writing error response: {}", .{write_err});
+                    try logger.err("Error writing error response: {any}", .{write_err});
                 }
             };
 
@@ -146,7 +146,7 @@ pub const HttpServer = struct {
         if (metrics.getGlobalMetrics()) |_| {
             metrics.startRequestMetrics(&request) catch |err| {
                 if (logging.getGlobalLogger()) |logger| {
-                    try logger.err("Error starting metrics: {}", .{err});
+                    try logger.err("Error starting metrics: {any}", .{err});
                 }
             };
         }
@@ -154,7 +154,7 @@ pub const HttpServer = struct {
         // Handle the request with error recovery
         const response = self.handleRequest(&request) catch |err| {
             if (logging.getGlobalLogger()) |logger| {
-                try logger.err("Error handling request: {}", .{err});
+                try logger.err("Error handling request: {any}", .{err});
             }
 
             return Response.init(.internal_server_error, "text/plain", "Internal Server Error");
@@ -162,20 +162,20 @@ pub const HttpServer = struct {
 
         const formatted_response = response.format() catch |fmt_err| {
             if (logging.getGlobalLogger()) |logger| {
-                try logger.err("Error formatting response: {}", .{fmt_err});
+                try logger.err("Error formatting response: {any}", .{fmt_err});
             }
             return;
         };
         defer std.heap.page_allocator.free(formatted_response);
 
         if (logging.getGlobalLogger()) |logger| {
-            try logger.debug("Sending response: status={}", .{response.status});
+            try logger.debug("Sending response: status={any}", .{response.status});
         }
 
         // Try to write response with error recovery
         self.writeTls(secured_socket, formatted_response) catch |err| {
             if (logging.getGlobalLogger()) |logger| {
-                try logger.err("Error writing response: {}", .{err});
+                try logger.err("Error writing response: {any}", .{err});
             }
             return;
         };
@@ -183,7 +183,7 @@ pub const HttpServer = struct {
         // Record metrics after sending response
         metrics.recordResponseMetrics(&request, &response) catch |err| {
             if (logging.getGlobalLogger()) |logger| {
-                try logger.err("Error recording metrics: {}", .{err});
+                try logger.err("Error recording metrics: {any}", .{err});
             }
         };
     }
@@ -232,4 +232,3 @@ pub const HttpServer = struct {
         try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &std.mem.toBytes(write_timeout));
     }
 };
-

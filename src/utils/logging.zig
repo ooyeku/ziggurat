@@ -33,14 +33,12 @@ pub const Logger = struct {
     level: LogLevel = .info,
     enable_colors: bool = true,
     enable_timestamp: bool = true,
-    out_stream: std.fs.File.Writer,
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) !Self {
         return Self{
             .allocator = allocator,
-            .out_stream = std.io.getStdOut().writer(),
         };
     }
 
@@ -87,11 +85,11 @@ pub const Logger = struct {
         if (self.enable_timestamp) {
             const timestamp = try self.getTimestamp();
             defer self.allocator.free(timestamp);
-            try self.out_stream.print("{s} ", .{timestamp});
+            std.debug.print("{s} ", .{timestamp});
         }
 
-        try self.out_stream.print("{s}[{s}]{s} ", .{ color, level_str, reset });
-        try self.out_stream.print(format ++ "\n", args);
+        std.debug.print("{s}[{s}]{s} ", .{ color, level_str, reset });
+        std.debug.print(format ++ "\n", args);
     }
 
     pub fn debug(self: *Self, comptime format: []const u8, args: anytype) !void {

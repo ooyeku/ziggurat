@@ -15,17 +15,17 @@ pub const Middleware = struct {
 
     pub fn init(allocator: std.mem.Allocator) Middleware {
         return .{
-            .handlers = std.ArrayList(MiddlewareHandler).init(allocator),
+            .handlers = std.ArrayList(MiddlewareHandler){},
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *Middleware) void {
-        self.handlers.deinit();
+        self.handlers.deinit(self.allocator);
     }
 
     pub fn add(self: *Middleware, handler: MiddlewareHandler) !void {
-        try self.handlers.append(handler);
+        try self.handlers.append(self.allocator, handler);
     }
 
     pub fn process(self: *const Middleware, request: *Request) ?Response {

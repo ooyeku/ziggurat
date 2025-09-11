@@ -24,8 +24,7 @@ pub fn main() !void {
     arena = std.heap.ArenaAllocator.init(global_allocator);
     defer arena.deinit();
 
-    const arena_allocator = arena.allocator();
-    todos = std.ArrayList(Todo).init(arena_allocator);
+    todos = std.ArrayList(Todo){};
 
     // Initialize the server
     try ziggurat.logger.initGlobalLogger(global_allocator);
@@ -143,16 +142,16 @@ fn recoverFromPanics(request: *ziggurat.request.Request) ?ziggurat.response.Resp
 
 fn handleListTodos(request: *ziggurat.request.Request) ziggurat.response.Response {
     _ = request;
-    var json_str = std.ArrayList(u8).init(arena.allocator());
+    var json_str = std.ArrayList(u8){};
 
-    json_str.appendSlice("[") catch return ziggurat.errorResponse(
+    json_str.appendSlice(arena.allocator(), "[") catch return ziggurat.errorResponse(
         .internal_server_error,
         "Failed to generate response",
     );
 
     for (todos.items, 0..) |todo, i| {
         const comma = if (i == todos.items.len - 1) "" else ",";
-        std.fmt.format(json_str.writer(),
+        std.fmt.format(json_str.writer(arena.allocator()),
             \\{{"id": {d}, "title": "{s}", "completed": {}}}{s}
         , .{ todo.id, todo.title, todo.completed, comma }) catch return ziggurat.errorResponse(
             .internal_server_error,
@@ -160,7 +159,7 @@ fn handleListTodos(request: *ziggurat.request.Request) ziggurat.response.Respons
         );
     }
 
-    json_str.appendSlice("]") catch return ziggurat.errorResponse(
+    json_str.appendSlice(arena.allocator(), "]") catch return ziggurat.errorResponse(
         .internal_server_error,
         "Failed to generate response",
     );
@@ -230,14 +229,14 @@ fn handleCreateTodo(request: *ziggurat.request.Request) ziggurat.response.Respon
     };
     next_id += 1;
 
-    todos.append(todo) catch return ziggurat.errorResponse(
+    todos.append(arena.allocator(), todo) catch return ziggurat.errorResponse(
         .internal_server_error,
         "Failed to create todo",
     );
 
-    var json_str = std.ArrayList(u8).init(arena.allocator());
+    var json_str = std.ArrayList(u8){};
 
-    std.fmt.format(json_str.writer(),
+    std.fmt.format(json_str.writer(arena.allocator()),
         \\{{"id": {d}, "title": "{s}", "completed": {}, "message": "Todo created successfully"}}
     , .{ todo.id, todo.title, todo.completed }) catch return ziggurat.errorResponse(
         .internal_server_error,
@@ -267,9 +266,9 @@ fn handleGetTodo(request: *ziggurat.request.Request) ziggurat.response.Response 
     // Find the todo with the matching ID
     for (todos.items) |todo| {
         if (todo.id == id) {
-            var json_str = std.ArrayList(u8).init(arena.allocator());
+            var json_str = std.ArrayList(u8){};
 
-            std.fmt.format(json_str.writer(),
+            std.fmt.format(json_str.writer(arena.allocator()),
                 \\{{"id": {d}, "title": "{s}", "completed": {}}}
             , .{ todo.id, todo.title, todo.completed }) catch return ziggurat.errorResponse(
                 .internal_server_error,
