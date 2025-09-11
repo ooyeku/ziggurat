@@ -2,7 +2,7 @@
 
 A modern, lightweight HTTP server framework for Zig that prioritizes performance, safety, and developer experience.
 
-[Zig 0.14.0](https://ziglang.org) | [MIT License](LICENSE)
+[Zig 0.15.1](https://ziglang.org) | [MIT License](LICENSE)
 
 
 ## Quick Start
@@ -76,7 +76,7 @@ var server = try builder
 
 ## Requirements
 
-- Zig 0.14.0-dev.2577 or later
+- Zig 0.15.1 or later
 
 ## Installation
 

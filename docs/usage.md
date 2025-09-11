@@ -25,15 +25,17 @@ Create a `src/ziggurat.zig` file and add the following:
 ```zig
 pub const ServerBuilder = @import("ziggurat").ServerBuilder;
 pub const Server = @import("ziggurat").Server;
-pub const ServerConfig = @import("ziggurat").ServerConfig;
-pub const Request = @import("ziggurat").Request;
-pub const Response = @import("ziggurat").Response;
-pub const Method = @import("ziggurat").Method;
-pub const StatusCode = @import("ziggurat").StatusCode;
-pub const Middleware = @import("ziggurat").Middleware;
+pub const config = @import("ziggurat").config;
+pub const request = @import("ziggurat").request;
+pub const response = @import("ziggurat").response;
+pub const middleware = @import("ziggurat").middleware;
 pub const logger = @import("ziggurat").logger;
 pub const metrics = @import("ziggurat").metrics;
 pub const router = @import("ziggurat").router;
+pub const json = @import("ziggurat").json;
+pub const text = @import("ziggurat").text;
+pub const errorResponse = @import("ziggurat").errorResponse;
+pub const Status = @import("ziggurat").Status;
 ```
 
 Then, integrate it into your `build.zig` file:
@@ -97,7 +99,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     // Initialize logger
-    try ziggurat.logging.initGlobalLogger(allocator);
+    try ziggurat.logger.initGlobalLogger(allocator);
     
     // Initialize metrics
     try ziggurat.metrics.initGlobalMetrics(allocator, 1000); // Keep last 1000 requests
@@ -122,11 +124,7 @@ pub fn main() !void {
 
 fn handleRoot(request: *ziggurat.request.Request) ziggurat.response.Response {
     _ = request;
-    return ziggurat.response.Response.init(
-        .ok,
-        "text/plain",
-        "Hello, World!",
-    );
+    return ziggurat.text("Hello, World!");
 }
 ```
 
@@ -157,7 +155,7 @@ fn handleRequest(request: *ziggurat.request.Request) ziggurat.response.Response 
     const method = request.method;        // HTTP method
     const path = request.path;            // Request path
     const headers = request.headers;      // Request headers
-    const query = request.query;          // Query parameters
+    const body = request.body;            // Request body
 
     // Return a response
     return ziggurat.json("{ \"status\": \"success\" }");
@@ -170,7 +168,7 @@ Middleware functions can process requests before they reach route handlers:
 
 ```zig
 fn logRequests(request: *ziggurat.request.Request) ?ziggurat.response.Response {
-    if (ziggurat.logging.getGlobalLogger()) |logger| {
+    if (ziggurat.logger.getGlobalLogger()) |logger| {
         logger.info("[{s}] {s}", .{ @tagName(request.method), request.path }) catch {};
     }
     return null; // Continue to next handler
@@ -220,13 +218,18 @@ The metrics system automatically tracks:
 
 ```zig
 // Get aggregate stats for a specific endpoint
-const stats = ziggurat.metrics.getEndpointStats("/api/users", "GET");
-
-// Get the average response time for an endpoint
-const avg_ms = stats.getAverageResponseTime();
+if (ziggurat.metrics.getGlobalMetrics()) |manager| {
+    const stats = try manager.getEndpointStats("GET", "/api/users");
+    if (stats) |s| {
+        // Get the average response time for an endpoint
+        const avg_ms = s.getAverageDuration();
+    }
+}
 
 // Access recent request data
-const recent_requests = ziggurat.metrics.getRecentRequests(20); // Get last 20 requests
+if (ziggurat.metrics.getGlobalMetrics()) |manager| {
+    const recent_requests = manager.getRecentRequests(); // Get all recent requests
+}
 ```
 
 ### Metrics Endpoints
@@ -234,8 +237,8 @@ const recent_requests = ziggurat.metrics.getRecentRequests(20); // Get last 20 r
 You can add a built-in metrics endpoint to your server:
 
 ```zig
-// Add metrics endpoint
-try server.get("/metrics", ziggurat.metrics.handleMetricsRequest);
+// Add metrics endpoint (you would need to implement this handler)
+// try server.get("/metrics", handleMetricsRequest);
 ```
 
 ## Examples
@@ -302,9 +305,6 @@ Available HTTP methods:
 - POST
 - PUT
 - DELETE
-- PATCH
-- HEAD
-- OPTIONS
 
 ### Status Codes
 
@@ -312,13 +312,12 @@ Common status codes available via `ziggurat.Status`:
 
 - `.ok` (200)
 - `.created` (201)
-- `.no_content` (204)
 - `.bad_request` (400)
 - `.unauthorized` (401)
 - `.forbidden` (403)
 - `.not_found` (404)
-- `.method_not_allowed` (405)
 - `.internal_server_error` (500)
+- `.unsupported_media_type` (415)
 
 ### Logging
 
@@ -332,8 +331,8 @@ Ziggurat provides a built-in logging system with multiple levels:
 
 ```zig
 // Initialize logger
-try ziggurat.logging.initGlobalLogger(allocator);
-const logger = ziggurat.logging.getGlobalLogger().?;
+try ziggurat.logger.initGlobalLogger(allocator);
+const logger = ziggurat.logger.getGlobalLogger().?;
 
 // Log messages
 try logger.info("Server starting...", .{});
