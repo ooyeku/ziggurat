@@ -22,6 +22,7 @@ const response = @import("http/response.zig");
 const middleware = @import("middleware/middleware.zig");
 const tls = @import("server/tls.zig");
 const tls_test = @import("server/tls_test.zig");
+const metrics = @import("metrics.zig");
 
 // Note: json_helpers and test_client have compilation errors due to Zig 0.15 API changes
 // They are temporarily excluded until the APIs are updated
@@ -48,4 +49,5 @@ test {
     _ = middleware;
     _ = tls;
     _ = tls_test;
+    _ = metrics;
 }

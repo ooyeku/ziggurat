@@ -81,12 +81,20 @@ pub const MetricsManager = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        // Free keys in endpoint_stats
         var it = self.endpoint_stats.iterator();
         while (it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
         }
         self.endpoint_stats.deinit();
+
+        // Free path and method strings in recent_requests
+        for (self.recent_requests.items) |metric| {
+            self.allocator.free(metric.path);
+            self.allocator.free(metric.method);
+        }
         self.recent_requests.deinit(self.allocator);
+
         self.allocator.destroy(self);
     }
 
@@ -98,15 +106,17 @@ pub const MetricsManager = struct {
         errdefer self.allocator.free(method_copy);
 
         const key = try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ method_copy, path_copy });
-        errdefer self.allocator.free(key);
 
         self.metrics_mutex.lock();
         defer self.metrics_mutex.unlock();
 
         // Update endpoint stats
         if (self.endpoint_stats.getPtr(key)) |stats| {
+            // Key exists, free our copy
             stats.update(metric.duration_ms);
+            self.allocator.free(key);
         } else {
+            // New endpoint, insert key (hashmap now owns it)
             var new_stats = EndpointStats{};
             new_stats.update(metric.duration_ms);
             try self.endpoint_stats.put(key, new_stats);
@@ -248,4 +258,243 @@ pub fn recordResponseMetrics(request: *http.Request, response: *const http.Respo
         // Record the metric
         try manager.recordMetric(metric);
     }
+}
+
+test "RequestMetric initialization" {
+    const metric = RequestMetric.init("/api/users", "GET", 200);
+    try std.testing.expectEqualStrings("/api/users", metric.path);
+    try std.testing.expectEqualStrings("GET", metric.method);
+    try std.testing.expectEqual(@as(u16, 200), metric.status_code);
+    try std.testing.expectEqual(@as(i64, 0), metric.duration_ms);
+}
+
+test "RequestMetric complete sets duration" {
+    var metric = RequestMetric.init("/api/test", "POST", 201);
+    const initial_duration = metric.duration_ms;
+
+    metric.complete();
+
+    // Duration should be updated (may be 0 or positive)
+    try std.testing.expect(metric.duration_ms >= initial_duration);
+}
+
+test "EndpointStats initialization" {
+    const stats = EndpointStats{};
+    try std.testing.expectEqual(@as(u64, 0), stats.total_requests);
+    try std.testing.expectEqual(@as(i64, 0), stats.total_duration_ms);
+    try std.testing.expectEqual(@as(i64, 0), stats.getAverageDuration());
+}
+
+test "EndpointStats update single request" {
+    var stats = EndpointStats{};
+    stats.update(100);
+
+    try std.testing.expectEqual(@as(u64, 1), stats.total_requests);
+    try std.testing.expectEqual(@as(i64, 100), stats.total_duration_ms);
+    try std.testing.expectEqual(@as(i64, 100), stats.min_duration_ms);
+    try std.testing.expectEqual(@as(i64, 100), stats.max_duration_ms);
+    try std.testing.expectEqual(100.0, stats.getAverageDuration());
+}
+
+test "EndpointStats update multiple requests" {
+    var stats = EndpointStats{};
+    stats.update(100);
+    stats.update(200);
+    stats.update(150);
+
+    try std.testing.expectEqual(@as(u64, 3), stats.total_requests);
+    try std.testing.expectEqual(@as(i64, 450), stats.total_duration_ms);
+    try std.testing.expectEqual(@as(i64, 100), stats.min_duration_ms);
+    try std.testing.expectEqual(@as(i64, 200), stats.max_duration_ms);
+    try std.testing.expectEqual(150.0, stats.getAverageDuration());
+}
+
+test "EndpointStats clone" {
+    var original = EndpointStats{};
+    original.update(100);
+    original.update(200);
+
+    const cloned = original.clone();
+
+    try std.testing.expectEqual(original.total_requests, cloned.total_requests);
+    try std.testing.expectEqual(original.total_duration_ms, cloned.total_duration_ms);
+    try std.testing.expectEqual(original.min_duration_ms, cloned.min_duration_ms);
+    try std.testing.expectEqual(original.max_duration_ms, cloned.max_duration_ms);
+}
+
+test "MetricsManager initialization" {
+    var manager = try MetricsManager.init(std.testing.allocator, 100);
+    defer manager.deinit();
+
+    try std.testing.expectEqual(@as(usize, 100), manager.max_recent_requests);
+    try std.testing.expectEqual(@as(usize, 0), manager.recent_requests.items.len);
+}
+
+test "MetricsManager record single metric" {
+    var manager = try MetricsManager.init(std.testing.allocator, 100);
+    defer manager.deinit();
+
+    const metric = RequestMetric.init("/test", "GET", 200);
+    try manager.recordMetric(metric);
+
+    try std.testing.expectEqual(@as(usize, 1), manager.recent_requests.items.len);
+}
+
+test "MetricsManager get endpoint stats" {
+    var manager = try MetricsManager.init(std.testing.allocator, 100);
+    defer manager.deinit();
+
+    var metric1 = RequestMetric.init("/api/users", "GET", 200);
+    metric1.duration_ms = 50;
+    try manager.recordMetric(metric1);
+
+    var metric2 = RequestMetric.init("/api/users", "GET", 200);
+    metric2.duration_ms = 100;
+    try manager.recordMetric(metric2);
+
+    const stats = try manager.getEndpointStats("GET", "/api/users");
+    try std.testing.expect(stats != null);
+    try std.testing.expectEqual(@as(u64, 2), stats.?.total_requests);
+    try std.testing.expectEqual(@as(i64, 150), stats.?.total_duration_ms);
+}
+
+test "MetricsManager recent requests limit" {
+    var manager = try MetricsManager.init(std.testing.allocator, 3);
+    defer manager.deinit();
+
+    var metric1 = RequestMetric.init("/api/1", "GET", 200);
+    metric1.duration_ms = 10;
+    try manager.recordMetric(metric1);
+
+    var metric2 = RequestMetric.init("/api/2", "GET", 200);
+    metric2.duration_ms = 10;
+    try manager.recordMetric(metric2);
+
+    var metric3 = RequestMetric.init("/api/3", "GET", 200);
+    metric3.duration_ms = 10;
+    try manager.recordMetric(metric3);
+
+    var metric4 = RequestMetric.init("/api/4", "GET", 200);
+    metric4.duration_ms = 10;
+    try manager.recordMetric(metric4);
+
+    // Should only keep last 3
+    try std.testing.expectEqual(@as(usize, 3), manager.recent_requests.items.len);
+    try std.testing.expectEqualStrings("/api/2", manager.recent_requests.items[0].path);
+    try std.testing.expectEqualStrings("/api/3", manager.recent_requests.items[1].path);
+    try std.testing.expectEqualStrings("/api/4", manager.recent_requests.items[2].path);
+}
+
+test "MetricsManager get recent requests" {
+    var manager = try MetricsManager.init(std.testing.allocator, 100);
+    defer manager.deinit();
+
+    var metric = RequestMetric.init("/test", "POST", 201);
+    metric.duration_ms = 25;
+    try manager.recordMetric(metric);
+
+    const recent = manager.getRecentRequests();
+    try std.testing.expectEqual(@as(usize, 1), recent.len);
+    try std.testing.expectEqualStrings("/test", recent[0].path);
+    try std.testing.expectEqualStrings("POST", recent[0].method);
+    try std.testing.expectEqual(@as(u16, 201), recent[0].status_code);
+}
+
+test "MetricsManager different endpoints" {
+    var manager = try MetricsManager.init(std.testing.allocator, 100);
+    defer manager.deinit();
+
+    var metric1 = RequestMetric.init("/api/users", "GET", 200);
+    metric1.duration_ms = 50;
+    try manager.recordMetric(metric1);
+
+    var metric2 = RequestMetric.init("/api/posts", "GET", 200);
+    metric2.duration_ms = 100;
+    try manager.recordMetric(metric2);
+
+    var metric3 = RequestMetric.init("/api/users", "POST", 201);
+    metric3.duration_ms = 75;
+    try manager.recordMetric(metric3);
+
+    const users_get = try manager.getEndpointStats("GET", "/api/users");
+    try std.testing.expect(users_get != null);
+    try std.testing.expectEqual(@as(u64, 1), users_get.?.total_requests);
+
+    const posts_get = try manager.getEndpointStats("GET", "/api/posts");
+    try std.testing.expect(posts_get != null);
+    try std.testing.expectEqual(@as(u64, 1), posts_get.?.total_requests);
+
+    const users_post = try manager.getEndpointStats("POST", "/api/users");
+    try std.testing.expect(users_post != null);
+    try std.testing.expectEqual(@as(u64, 1), users_post.?.total_requests);
+}
+
+test "MetricsManager non-existent endpoint" {
+    var manager = try MetricsManager.init(std.testing.allocator, 100);
+    defer manager.deinit();
+
+    const stats = try manager.getEndpointStats("GET", "/api/nonexistent");
+    try std.testing.expect(stats == null);
+}
+
+test "Global metrics manager initialization" {
+    deinitGlobalMetrics();
+
+    try initGlobalMetrics(std.testing.allocator, 100);
+    defer deinitGlobalMetrics();
+
+    const manager = getGlobalMetrics();
+    try std.testing.expect(manager != null);
+}
+
+test "Global metrics manager get after init" {
+    deinitGlobalMetrics();
+
+    try initGlobalMetrics(std.testing.allocator, 50);
+    defer deinitGlobalMetrics();
+
+    const manager1 = getGlobalMetrics();
+    try std.testing.expect(manager1 != null);
+
+    const manager2 = getGlobalMetrics();
+    try std.testing.expect(manager2 != null);
+
+    // Should be same instance
+    try std.testing.expectEqual(manager1.?.max_recent_requests, manager2.?.max_recent_requests);
+}
+
+test "Global metrics manager already initialized error" {
+    deinitGlobalMetrics();
+
+    try initGlobalMetrics(std.testing.allocator, 100);
+    defer deinitGlobalMetrics();
+
+    const result = initGlobalMetrics(std.testing.allocator, 100);
+    try std.testing.expectError(error.AlreadyInitialized, result);
+}
+
+test "Global metrics manager is null after deinit" {
+    deinitGlobalMetrics();
+
+    try initGlobalMetrics(std.testing.allocator, 100);
+    deinitGlobalMetrics();
+
+    const manager = getGlobalMetrics();
+    try std.testing.expect(manager == null);
+}
+
+test "EndpointStats average duration zero requests" {
+    const stats = EndpointStats{};
+    try std.testing.expectEqual(0.0, stats.getAverageDuration());
+}
+
+test "RequestMetric with different status codes" {
+    const metric1 = RequestMetric.init("/api/test", "GET", 200);
+    try std.testing.expectEqual(@as(u16, 200), metric1.status_code);
+
+    const metric2 = RequestMetric.init("/api/test", "POST", 201);
+    try std.testing.expectEqual(@as(u16, 201), metric2.status_code);
+
+    const metric3 = RequestMetric.init("/api/test", "DELETE", 204);
+    try std.testing.expectEqual(@as(u16, 204), metric3.status_code);
 }
