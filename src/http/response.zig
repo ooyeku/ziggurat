@@ -3,8 +3,14 @@ const testing = std.testing;
 
 pub const StatusCode = enum(u16) {
     ok = 200,
+    created = 201,
+    accepted = 202,
+    no_content = 204,
     bad_request = 400,
+    unauthorized = 401,
+    forbidden = 403,
     not_found = 404,
+    conflict = 409,
     method_not_allowed = 405,
     request_timeout = 408,
     payload_too_large = 413,
@@ -15,8 +21,14 @@ pub const StatusCode = enum(u16) {
     pub fn toString(self: StatusCode) []const u8 {
         return switch (self) {
             .ok => "200 OK",
+            .created => "201 Created",
+            .accepted => "202 Accepted",
+            .no_content => "204 No Content",
             .bad_request => "400 Bad Request",
+            .unauthorized => "401 Unauthorized",
+            .forbidden => "403 Forbidden",
             .not_found => "404 Not Found",
+            .conflict => "409 Conflict",
             .method_not_allowed => "405 Method Not Allowed",
             .request_timeout => "408 Request Timeout",
             .payload_too_large => "413 Payload Too Large",
@@ -41,22 +53,16 @@ pub const Response = struct {
     }
 
     pub fn format(self: *const Response) ![]const u8 {
-        return std.fmt.allocPrint(
-            std.heap.page_allocator,
-            "HTTP/1.1 {s}\r\nContent-Type: {s}\r\nContent-Length: {d}\r\n\r\n{s}",
-            .{
-                self.status.toString(),
-                self.content_type,
-                self.body.len,
-                self.body,
-            }
-        );
+        return std.fmt.allocPrint(std.heap.page_allocator, "HTTP/1.1 {s}\r\nContent-Type: {s}\r\nContent-Length: {d}\r\n\r\n{s}", .{
+            self.status.toString(),
+            self.content_type,
+            self.body.len,
+            self.body,
+        });
     }
-
 };
 
-
-test "format response" {    
+test "format response" {
     var response = Response.init(.ok, "text/plain", "Hello, World!");
 
     const formatted = try response.format();
@@ -64,7 +70,7 @@ test "format response" {
     try testing.expectEqualStrings("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nHello, World!", formatted);
 }
 
-test "format response with body" {    
+test "format response with body" {
     var response = Response.init(.ok, "text/plain", "Hello, World!");
 
     const formatted = try response.format();
@@ -72,7 +78,7 @@ test "format response with body" {
     try testing.expectEqualStrings("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nHello, World!", formatted);
 }
 
-test "format response with body and content type" {    
+test "format response with body and content type" {
     var response = Response.init(.ok, "text/html", "Hello, World!");
 
     const formatted = try response.format();

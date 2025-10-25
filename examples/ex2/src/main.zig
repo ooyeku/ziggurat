@@ -25,6 +25,17 @@ pub fn main() !void {
     try ziggurat.logger.initGlobalLogger(allocator);
     const logger = ziggurat.logger.getGlobalLogger().?;
 
+    // Initialize metrics for observability
+    try ziggurat.metrics.initGlobalMetrics(allocator, 500);
+    defer ziggurat.metrics.deinitGlobalMetrics();
+
+    // Initialize error handler for standardized error responses
+    try ziggurat.error_handler.initGlobalErrorHandler(allocator, false);
+    defer ziggurat.error_handler.deinitGlobalErrorHandler();
+
+    // Initialize CORS for cross-origin requests
+    try ziggurat.cors.initGlobalCorsConfig(allocator);
+
     // Create public directory if it doesn't exist
     try std.fs.cwd().makePath(public_dir);
 
@@ -41,22 +52,29 @@ pub fn main() !void {
     var builder = ziggurat.ServerBuilder.init(allocator);
     var server = try builder
         .host("127.0.0.1")
-        .port(8443) // Changed to standard HTTPS port
-        .readTimeout(30000) // Longer timeout for file transfers
+        .port(8080)
+        .readTimeout(30000)
         .writeTimeout(30000)
-        .enableTls(cert_path, key_path)
+        // TLS is not fully implemented yet - using HTTP for now
+        // .enableTls(cert_path, key_path)
         .build();
     defer server.deinit();
 
-    // Add middleware
+    // Add middleware in order: logging -> CORS -> caching
+    try server.middleware(ziggurat.request_logger.requestLoggingMiddleware);
+    try server.middleware(ziggurat.cors.corsMiddleware);
     try server.middleware(logRequests);
     try server.middleware(setCacheHeaders);
+    try server.middleware(setSecurityHeaders);
 
     // Add routes
     try server.get("/", handleIndex);
     try server.get("/static/*", handleStaticFile);
+    try server.get("/metrics", handleMetrics);
 
-    try logger.info("Static file server running at https://127.0.0.1:8443", .{});
+    try logger.info("Static file server v1.0 running at http://127.0.0.1:8080", .{});
+    try logger.info("Features: CORS, Security Headers, Caching, Metrics", .{});
+    try logger.info("Note: TLS support is not yet fully implemented", .{});
     try server.start();
 }
 
@@ -299,4 +317,34 @@ fn getContentType(path: []const u8) []const u8 {
     if (std.mem.endsWith(u8, path, ".png")) return "image/png";
     if (std.mem.endsWith(u8, path, ".jpg") or std.mem.endsWith(u8, path, ".jpeg")) return "image/jpeg";
     return "application/octet-stream";
+}
+
+fn setSecurityHeaders(request: *ziggurat.request.Request) ?ziggurat.response.Response {
+    _ = request;
+    // Security headers are set via middleware - just return null to continue
+    return null;
+}
+
+fn handleMetrics(request: *ziggurat.request.Request) ziggurat.response.Response {
+    _ = request;
+
+    if (ziggurat.metrics.getGlobalMetrics()) |manager| {
+        var buf: [256]u8 = undefined;
+        const allocator = std.heap.page_allocator;
+
+        const recent = manager.getRecentRequests();
+        const response_json = std.fmt.bufPrint(&buf,
+            \\{{"total_requests": {d}, "recent_requests": {d}}}
+        , .{ recent.len, @min(recent.len, 10) }) catch {
+            return ziggurat.errorResponse(.internal_server_error, "Failed to generate metrics");
+        };
+
+        const result = allocator.dupe(u8, response_json) catch {
+            return ziggurat.errorResponse(.internal_server_error, "Failed to allocate metrics");
+        };
+
+        return ziggurat.json(result);
+    }
+
+    return ziggurat.errorResponse(.internal_server_error, "Metrics not initialized");
 }

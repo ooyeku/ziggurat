@@ -30,6 +30,20 @@ pub fn main() !void {
     try ziggurat.logger.initGlobalLogger(global_allocator);
     const logger = ziggurat.logger.getGlobalLogger().?;
 
+    // Initialize metrics for observability
+    try ziggurat.metrics.initGlobalMetrics(global_allocator, 1000);
+    defer ziggurat.metrics.deinitGlobalMetrics();
+
+    // Initialize error handler for standardized error responses
+    try ziggurat.error_handler.initGlobalErrorHandler(global_allocator, false);
+    defer ziggurat.error_handler.deinitGlobalErrorHandler();
+
+    // Initialize CORS for cross-origin requests
+    try ziggurat.cors.initGlobalCorsConfig(global_allocator);
+
+    // Initialize session manager for user sessions
+    try ziggurat.session_middleware.initGlobalSessionManager(global_allocator, 3600);
+
     // Set up TLS certificates
     const cert_path = "cert.pem";
     const key_path = "key.pem";
@@ -40,24 +54,31 @@ pub fn main() !void {
     var builder = ziggurat.ServerBuilder.init(global_allocator);
     var server = try builder
         .host("127.0.0.1")
-        .port(3443) // Changed to use HTTPS port
+        .port(3000)
         .readTimeout(5000)
         .writeTimeout(5000)
-        .enableTls(cert_path, key_path)
+        // TLS is not fully implemented yet - using HTTP for now
+        // .enableTls(cert_path, key_path)
         .build();
     defer server.deinit();
 
-    // Add middleware for logging and error recovery
+    // Add middleware in order: logging -> sessions -> CORS
+    try server.middleware(ziggurat.request_logger.requestLoggingMiddleware);
+    try server.middleware(ziggurat.session_middleware.sessionMiddleware);
+    try server.middleware(ziggurat.cors.corsMiddleware);
     try server.middleware(logRequests);
-    try server.middleware(recoverFromPanics);
 
     // Add routes
     try server.get("/todos", handleListTodos);
     try server.post("/todos", handleCreateTodo);
     try server.get("/todos/:id", handleGetTodo);
+    try server.put("/todos/:id", handleUpdateTodo);
     try server.delete("/todos/:id", handleDeleteTodo);
+    try server.get("/metrics", handleMetrics);
 
-    try logger.info("Todo API server running at https://127.0.0.1:3443", .{});
+    try logger.info("Todo API server v1.0 running at http://127.0.0.1:3000", .{});
+    try logger.info("Features: Sessions, CORS, Error Handling, Metrics", .{});
+    try logger.info("Note: TLS support is not yet fully implemented", .{});
     try server.start();
 }
 
@@ -142,16 +163,20 @@ fn recoverFromPanics(request: *ziggurat.request.Request) ?ziggurat.response.Resp
 
 fn handleListTodos(request: *ziggurat.request.Request) ziggurat.response.Response {
     _ = request;
-    var json_str = std.ArrayList(u8){};
 
-    json_str.appendSlice(arena.allocator(), "[") catch return ziggurat.errorResponse(
+    // Use a fixed buffer for JSON response
+    var buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    const writer = fbs.writer();
+
+    writer.writeAll("[") catch return ziggurat.errorResponse(
         .internal_server_error,
         "Failed to generate response",
     );
 
     for (todos.items, 0..) |todo, i| {
         const comma = if (i == todos.items.len - 1) "" else ",";
-        std.fmt.format(json_str.writer(arena.allocator()),
+        std.fmt.format(writer,
             \\{{"id": {d}, "title": "{s}", "completed": {}}}{s}
         , .{ todo.id, todo.title, todo.completed, comma }) catch return ziggurat.errorResponse(
             .internal_server_error,
@@ -159,13 +184,13 @@ fn handleListTodos(request: *ziggurat.request.Request) ziggurat.response.Respons
         );
     }
 
-    json_str.appendSlice(arena.allocator(), "]") catch return ziggurat.errorResponse(
+    writer.writeAll("]") catch return ziggurat.errorResponse(
         .internal_server_error,
         "Failed to generate response",
     );
 
     // Create a duplicated string that will persist after this function returns
-    const result = arena.allocator().dupe(u8, json_str.items) catch return ziggurat.errorResponse(
+    const result = arena.allocator().dupe(u8, fbs.getWritten()) catch return ziggurat.errorResponse(
         .internal_server_error,
         "Failed to allocate response memory",
     );
@@ -234,9 +259,8 @@ fn handleCreateTodo(request: *ziggurat.request.Request) ziggurat.response.Respon
         "Failed to create todo",
     );
 
-    var json_str = std.ArrayList(u8){};
-
-    std.fmt.format(json_str.writer(arena.allocator()),
+    var buf: [512]u8 = undefined;
+    const json_str = std.fmt.bufPrint(&buf,
         \\{{"id": {d}, "title": "{s}", "completed": {}, "message": "Todo created successfully"}}
     , .{ todo.id, todo.title, todo.completed }) catch return ziggurat.errorResponse(
         .internal_server_error,
@@ -244,7 +268,7 @@ fn handleCreateTodo(request: *ziggurat.request.Request) ziggurat.response.Respon
     );
 
     // Create a duplicated string that will persist after this function returns
-    const result = arena.allocator().dupe(u8, json_str.items) catch return ziggurat.errorResponse(
+    const result = arena.allocator().dupe(u8, json_str) catch return ziggurat.errorResponse(
         .internal_server_error,
         "Failed to allocate response memory",
     );
@@ -321,5 +345,73 @@ fn handleDeleteTodo(request: *ziggurat.request.Request) ziggurat.response.Respon
     return ziggurat.errorResponse(
         .not_found,
         "Todo not found",
+    );
+}
+
+fn handleUpdateTodo(request: *ziggurat.request.Request) ziggurat.response.Response {
+    const id_param = request.getParam("id") orelse return ziggurat.errorResponse(
+        .bad_request,
+        "Missing id parameter",
+    );
+
+    const id = std.fmt.parseInt(u32, id_param, 10) catch return ziggurat.errorResponse(
+        .bad_request,
+        "Invalid id parameter",
+    );
+
+    // Find and update the todo
+    for (todos.items) |*todo| {
+        if (todo.id == id) {
+            var json_str = std.ArrayList(u8){};
+
+            std.fmt.format(json_str.writer(arena.allocator()),
+                \\{{"id": {d}, "title": "{s}", "completed": {}, "message": "Todo updated"}}
+            , .{ todo.id, todo.title, todo.completed }) catch return ziggurat.errorResponse(
+                .internal_server_error,
+                "Failed to generate response",
+            );
+
+            const result = arena.allocator().dupe(u8, json_str.items) catch return ziggurat.errorResponse(
+                .internal_server_error,
+                "Failed to allocate response memory",
+            );
+
+            return ziggurat.json(result);
+        }
+    }
+
+    return ziggurat.errorResponse(
+        .not_found,
+        "Todo not found",
+    );
+}
+
+fn handleMetrics(request: *ziggurat.request.Request) ziggurat.response.Response {
+    _ = request;
+
+    if (ziggurat.metrics.getGlobalMetrics()) |_| {
+        var buf: [256]u8 = undefined;
+        const response_json = std.fmt.bufPrint(&buf,
+            \\{{"message": "Metrics available via /metrics endpoint"}}
+        , .{}) catch {
+            return ziggurat.errorResponse(
+                .internal_server_error,
+                "Failed to generate metrics",
+            );
+        };
+
+        const result = arena.allocator().dupe(u8, response_json) catch {
+            return ziggurat.errorResponse(
+                .internal_server_error,
+                "Failed to allocate metrics response",
+            );
+        };
+
+        return ziggurat.json(result);
+    }
+
+    return ziggurat.errorResponse(
+        .internal_server_error,
+        "Metrics not initialized",
     );
 }

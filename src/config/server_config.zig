@@ -31,6 +31,13 @@ pub const ServerConfig = struct {
     pub fn getAddress(self: *const ServerConfig) !std.net.Address {
         return try std.net.Address.parseIp(self.host, self.port);
     }
+
+    pub fn fromEnv(allocator: std.mem.Allocator) !ServerConfig {
+        const EnvConfig = @import("env_config.zig").EnvConfig;
+        const env = try EnvConfig.fromEnv(allocator);
+
+        return ServerConfig.init(env.host, env.port);
+    }
 };
 
 test "ServerConfig initialization" {

@@ -5,6 +5,9 @@ pub const Method = enum {
     POST,
     PUT,
     DELETE,
+    OPTIONS,
+    HEAD,
+    PATCH,
     UNKNOWN,
 
     pub fn fromString(str: []const u8) Method {
@@ -12,6 +15,9 @@ pub const Method = enum {
         if (std.mem.eql(u8, str, "POST")) return .POST;
         if (std.mem.eql(u8, str, "PUT")) return .PUT;
         if (std.mem.eql(u8, str, "DELETE")) return .DELETE;
+        if (std.mem.eql(u8, str, "OPTIONS")) return .OPTIONS;
+        if (std.mem.eql(u8, str, "HEAD")) return .HEAD;
+        if (std.mem.eql(u8, str, "PATCH")) return .PATCH;
         return .UNKNOWN;
     }
 };
@@ -208,4 +214,3 @@ test "parse request with body" {
     try testing.expectEqualStrings("application/json", request.headers.get("Content-Type") orelse "");
     try testing.expectEqualStrings("{\"name\": \"John\"}", request.body);
 }
-

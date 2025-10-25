@@ -15,43 +15,43 @@ pub const HttpError = error{
 
 pub fn errorToResponse(err: HttpError) Response {
     return switch (err) {
-        .InvalidRequest => Response.init(
-            StatusCode.bad_request,
+        HttpError.InvalidRequest => Response.init(
+            .bad_request,
             "text/plain",
             "Invalid Request",
         ),
-        .RequestTimeout => Response.init(
-            StatusCode.request_timeout,
+        HttpError.RequestTimeout => Response.init(
+            .request_timeout,
             "text/plain",
             "Request Timeout",
         ),
-        .PayloadTooLarge => Response.init(
-            StatusCode.payload_too_large,
+        HttpError.PayloadTooLarge => Response.init(
+            .payload_too_large,
             "text/plain",
             "Payload Too Large",
         ),
-        .HeadersTooLarge => Response.init(
-            StatusCode.request_header_fields_too_large,
+        HttpError.HeadersTooLarge => Response.init(
+            .request_header_fields_too_large,
             "text/plain",
             "Headers Too Large",
         ),
-        .UnsupportedMediaType => Response.init(
-            StatusCode.unsupported_media_type,
+        HttpError.UnsupportedMediaType => Response.init(
+            .unsupported_media_type,
             "text/plain",
             "Unsupported Media Type",
         ),
-        .InternalServerError => Response.init(
-            StatusCode.internal_server_error,
+        HttpError.InternalServerError => Response.init(
+            .internal_server_error,
             "text/plain",
             "Internal Server Error",
         ),
-        .NotFound => Response.init(
-            StatusCode.not_found,
+        HttpError.NotFound => Response.init(
+            .not_found,
             "text/plain",
             "Not Found",
         ),
-        .MethodNotAllowed => Response.init(
-            StatusCode.method_not_allowed,
+        HttpError.MethodNotAllowed => Response.init(
+            .method_not_allowed,
             "text/plain",
             "Method Not Allowed",
         ),

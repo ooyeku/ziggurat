@@ -33,18 +33,30 @@ const Method = @import("http/request.zig").Method;
 const Response = @import("http/response.zig").Response;
 const StatusCode = @import("http/response.zig").StatusCode;
 
-
 pub const request = @import("http/request.zig");
 pub const response = @import("http/response.zig");
 pub const middleware = @import("middleware/middleware.zig");
 pub const http_error = @import("error/http_error.zig");
+pub const error_handler = @import("error/error_handler.zig");
 pub const router = @import("router/router.zig");
+pub const cors = @import("middleware/cors.zig");
 pub const config = struct {
     pub const ServerConfig = @import("config/server_config.zig").ServerConfig;
     pub const TlsConfig = @import("config/tls_config.zig").TlsConfig;
+    pub const EnvConfig = @import("config/env_config.zig").EnvConfig;
 };
 pub const logger = @import("utils/logging.zig");
 pub const metrics = @import("metrics.zig");
+pub const json_helpers = @import("utils/json_helpers.zig");
+pub const session = @import("session/session.zig");
+pub const cookie = @import("session/cookie.zig");
+pub const session_middleware = @import("middleware/session.zig");
+pub const testing_utils = @import("testing/test_client.zig");
+pub const request_logger = @import("middleware/request_logger.zig");
+pub const security = struct {
+    pub const rate_limiter = @import("security/rate_limiter.zig");
+    pub const headers = @import("security/headers.zig");
+};
 
 /// High-level Server type that wraps the implementation details
 pub const Server = struct {
@@ -107,6 +119,15 @@ pub const ServerBuilder = struct {
         return Self{
             .allocator = allocator,
             .config = ServerConfig.init("127.0.0.1", 8080),
+        };
+    }
+
+    /// Initialize a new server builder from environment variables
+    pub fn fromEnv(allocator: std.mem.Allocator) !Self {
+        const env_config = try ServerConfig.fromEnv(allocator);
+        return Self{
+            .allocator = allocator,
+            .config = env_config,
         };
     }
 
@@ -197,6 +218,11 @@ pub fn errorResponse(code: StatusCode, message: []const u8) Response {
     );
 }
 
+/// Serialize a Zig struct to JSON response
+pub fn jsonStruct(allocator: std.mem.Allocator, status: StatusCode, value: anytype) !Response {
+    const json_str = try json_helpers.jsonify(allocator, value);
+    return Response.init(status, "application/json", json_str);
+}
 
 test "server builder pattern" {
     const testing = std.testing;
