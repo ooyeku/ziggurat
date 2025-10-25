@@ -44,7 +44,7 @@ Welcome to the comprehensive guide for building web applications and APIs with Z
 Add Ziggurat to your project using `zig fetch`:
 
 ```bash
-zig fetch https://github.com/ooyeku/ziggurat/archive/refs/tags/v0.1.1.tar.gz
+zig fetch https://github.com/ooyeku/ziggurat/archive/refs/tags/v1.0.0.tar.gz
 ```
 
 ### Build Configuration
@@ -54,7 +54,7 @@ Add the dependency to your `build.zig.zon`:
 ```zig
 .{
     .name = "my-project",
-    .version = "0.1.0",
+    .version = "1.0.0",
     .dependencies = .{
         .ziggurat = .{
             .url = "https://github.com/ooyeku/ziggurat/archive/refs/tags/v0.1.1.tar.gz",
