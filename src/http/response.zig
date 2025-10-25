@@ -52,6 +52,40 @@ pub const Response = struct {
         };
     }
 
+    /// Create a JSON response
+    pub fn json(body: []const u8) Response {
+        return Response.init(.ok, "application/json", body);
+    }
+
+    /// Create a text response
+    pub fn text(body: []const u8) Response {
+        return Response.init(.ok, "text/plain", body);
+    }
+
+    /// Create an HTML response
+    pub fn html(body: []const u8) Response {
+        return Response.init(.ok, "text/html", body);
+    }
+
+    /// Create an error response
+    pub fn errorResponse(status: StatusCode, message: []const u8) Response {
+        return Response.init(status, "text/plain", message);
+    }
+
+    /// Set custom status code
+    pub fn withStatus(self: Response, status: StatusCode) Response {
+        var r = self;
+        r.status = status;
+        return r;
+    }
+
+    /// Set custom content type
+    pub fn withContentType(self: Response, content_type: []const u8) Response {
+        var r = self;
+        r.content_type = content_type;
+        return r;
+    }
+
     pub fn format(self: *const Response) ![]const u8 {
         return std.fmt.allocPrint(std.heap.page_allocator, "HTTP/1.1 {s}\r\nContent-Type: {s}\r\nContent-Length: {d}\r\n\r\n{s}", .{
             self.status.toString(),

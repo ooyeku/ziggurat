@@ -3,25 +3,29 @@
 //! This module provides the main public API for the Ziggurat HTTP server framework.
 //! It is designed to be stable and easy to use while providing powerful features.
 //!
-//! Example usage:
+//! ## New API (Recommended)
+//!
 //! ```zig
 //! const ziggurat = @import("ziggurat");
 //!
 //! pub fn main() !void {
-//!     var server = try ziggurat.ServerBuilder.init(allocator)
+//!     var server = try ziggurat.server.Builder.init(allocator)
 //!         .host("127.0.0.1")
 //!         .port(8080)
-//!         .readTimeout(5000)
-//!         .writeTimeout(5000)
+//!         .features(.{
+//!             .logging = .{ .level = .info },
+//!             .metrics = .{ .max_requests = 1000 },
+//!         })
+//!         .route(.GET, "/", handleRoot)
+//!         .use(ziggurat.middleware.logging)
 //!         .build();
 //!     defer server.deinit();
 //!
-//!     try server.get("/", handleRoot);
-//!     try server.post("/api/data", handleData);
-//!
-//!     try server.middleware(logRequests);
-//!
 //!     try server.start();
+//! }
+//!
+//! fn handleRoot(ctx: *ziggurat.handler.Context) !ziggurat.handler.Response {
+//!     return ziggurat.handler.Response.json("{\"status\":\"ok\"}");
 //! }
 //! ```
 
@@ -33,30 +37,66 @@ const Method = @import("http/request.zig").Method;
 const Response = @import("http/response.zig").Response;
 const StatusCode = @import("http/response.zig").StatusCode;
 
+// ============================================================================
+// NEW API - Recommended for new projects
+// ============================================================================
+
+pub const handler = @import("handler/mod.zig");
+pub const features = @import("features/mod.zig");
+pub const log = @import("log.zig");
+
+// ============================================================================
+// CORE MODULES
+// ============================================================================
+
 pub const request = @import("http/request.zig");
 pub const response = @import("http/response.zig");
-pub const middleware = @import("middleware/middleware.zig");
-pub const http_error = @import("error/http_error.zig");
-pub const error_handler = @import("error/error_handler.zig");
-pub const router = @import("router/router.zig");
-pub const cors = @import("middleware/cors.zig");
 pub const config = struct {
     pub const ServerConfig = @import("config/server_config.zig").ServerConfig;
     pub const TlsConfig = @import("config/tls_config.zig").TlsConfig;
     pub const EnvConfig = @import("config/env_config.zig").EnvConfig;
 };
+
+// ============================================================================
+// FEATURES & UTILITIES
+// ============================================================================
+
 pub const logger = @import("utils/logging.zig");
 pub const metrics = @import("metrics.zig");
 pub const json_helpers = @import("utils/json_helpers.zig");
+
+// ============================================================================
+// MIDDLEWARE & ROUTING
+// ============================================================================
+
+pub const middleware = @import("middleware/middleware.zig");
+pub const router = @import("router/router.zig");
+pub const request_logger = @import("middleware/request_logger.zig");
+pub const cors = @import("middleware/cors.zig");
+pub const session_middleware = @import("middleware/session.zig");
 pub const session = @import("session/session.zig");
 pub const cookie = @import("session/cookie.zig");
-pub const session_middleware = @import("middleware/session.zig");
-pub const testing_utils = @import("testing/test_client.zig");
-pub const request_logger = @import("middleware/request_logger.zig");
+
+// ============================================================================
+// SECURITY
+// ============================================================================
+
 pub const security = struct {
     pub const rate_limiter = @import("security/rate_limiter.zig");
     pub const headers = @import("security/headers.zig");
 };
+pub const http_error = @import("error/http_error.zig");
+pub const error_handler = @import("error/error_handler.zig");
+
+// ============================================================================
+// TESTING
+// ============================================================================
+
+pub const testing_utils = @import("testing/test_client.zig");
+
+// ============================================================================
+// HIGH-LEVEL SERVER API (Backwards Compatible)
+// ============================================================================
 
 /// High-level Server type that wraps the implementation details
 pub const Server = struct {
@@ -82,28 +122,28 @@ pub const Server = struct {
     }
 
     /// Add a GET route handler
-    pub fn get(self: *Self, path: []const u8, handler: fn (*Request) Response) !void {
-        try self.inner.router.addRoute(.GET, path, handler);
+    pub fn get(self: *Self, path: []const u8, route_handler: fn (*Request) Response) !void {
+        try self.inner.router.addRoute(.GET, path, route_handler);
     }
 
     /// Add a POST route handler
-    pub fn post(self: *Self, path: []const u8, handler: fn (*Request) Response) !void {
-        try self.inner.router.addRoute(.POST, path, handler);
+    pub fn post(self: *Self, path: []const u8, route_handler: fn (*Request) Response) !void {
+        try self.inner.router.addRoute(.POST, path, route_handler);
     }
 
     /// Add a PUT route handler
-    pub fn put(self: *Self, path: []const u8, handler: fn (*Request) Response) !void {
-        try self.inner.router.addRoute(.PUT, path, handler);
+    pub fn put(self: *Self, path: []const u8, route_handler: fn (*Request) Response) !void {
+        try self.inner.router.addRoute(.PUT, path, route_handler);
     }
 
     /// Add a DELETE route handler
-    pub fn delete(self: *Self, path: []const u8, handler: fn (*Request) Response) !void {
-        try self.inner.router.addRoute(.DELETE, path, handler);
+    pub fn delete(self: *Self, path: []const u8, route_handler: fn (*Request) Response) !void {
+        try self.inner.router.addRoute(.DELETE, path, route_handler);
     }
 
     /// Add middleware to the processing pipeline
-    pub fn middleware(self: *Self, handler: fn (*Request) ?Response) !void {
-        try self.inner.middleware.add(handler);
+    pub fn middleware(self: *Self, mw_handler: fn (*Request) ?Response) !void {
+        try self.inner.middleware.add(mw_handler);
     }
 };
 

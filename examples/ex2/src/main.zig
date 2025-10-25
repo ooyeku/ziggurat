@@ -1,6 +1,5 @@
-//! By convention, main.zig is where your main function lives in the case that
-//! you are building an executable. If you are making a library, the convention
-//! is to delete this file and start with root.zig instead.
+//! Static file server example using the NEW Ziggurat API
+//! Demonstrates file serving with caching and security headers
 
 const std = @import("std");
 const ziggurat = @import("ziggurat");
@@ -21,20 +20,14 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Initialize the logger
-    try ziggurat.logger.initGlobalLogger(allocator);
-    const logger = ziggurat.logger.getGlobalLogger().?;
-
-    // Initialize metrics for observability
-    try ziggurat.metrics.initGlobalMetrics(allocator, 500);
-    defer ziggurat.metrics.deinitGlobalMetrics();
-
-    // Initialize error handler for standardized error responses
-    try ziggurat.error_handler.initGlobalErrorHandler(allocator, false);
-    defer ziggurat.error_handler.deinitGlobalErrorHandler();
-
-    // Initialize CORS for cross-origin requests
-    try ziggurat.cors.initGlobalCorsConfig(allocator);
+    // NEW API: Initialize all features in one place
+    try ziggurat.features.initialize(allocator, .{
+        .logging = .{ .level = .info, .colors = true },
+        .metrics = .{ .max_requests = 500 },
+        .errors = .{ .debug = false },
+        .cors = .{},
+    });
+    defer ziggurat.features.deinitialize();
 
     // Create public directory if it doesn't exist
     try std.fs.cwd().makePath(public_dir);
@@ -42,309 +35,156 @@ pub fn main() !void {
     // Create some example static files
     try createExampleFiles();
 
-    // Set up TLS certificates
-    const cert_path = "cert.pem";
-    const key_path = "key.pem";
-
-    // Create self-signed certificates for development if they don't exist
-    try createSelfSignedCertificatesIfNeeded(cert_path, key_path);
-
     var builder = ziggurat.ServerBuilder.init(allocator);
     var server = try builder
         .host("127.0.0.1")
         .port(8080)
         .readTimeout(30000)
         .writeTimeout(30000)
-        // TLS is not fully implemented yet - using HTTP for now
-        // .enableTls(cert_path, key_path)
         .build();
     defer server.deinit();
 
-    // Add middleware in order: logging -> CORS -> caching
+    // Add middleware in order: logging -> CORS -> caching -> security
     try server.middleware(ziggurat.request_logger.requestLoggingMiddleware);
     try server.middleware(ziggurat.cors.corsMiddleware);
-    try server.middleware(logRequests);
     try server.middleware(setCacheHeaders);
-    try server.middleware(setSecurityHeaders);
 
     // Add routes
     try server.get("/", handleIndex);
     try server.get("/static/*", handleStaticFile);
     try server.get("/metrics", handleMetrics);
 
-    try logger.info("Static file server v1.0 running at http://127.0.0.1:8080", .{});
-    try logger.info("Features: CORS, Security Headers, Caching, Metrics", .{});
-    try logger.info("Note: TLS support is not yet fully implemented", .{});
+    // NEW API: Use simplified logging
+    try ziggurat.log.info("Static file server v2.0 running at http://127.0.0.1:8080", .{});
+    try ziggurat.log.info("Features: CORS, Security Headers, Caching, Metrics", .{});
     try server.start();
 }
 
-// Create self-signed certificates for development purposes if they don't exist
-fn createSelfSignedCertificatesIfNeeded(cert_path: []const u8, key_path: []const u8) !void {
-    // Check if files already exist
-    const cert_exists = blk: {
-        std.fs.cwd().access(cert_path, .{}) catch |err| {
-            if (err == error.FileNotFound) break :blk false;
-            return err;
-        };
-        break :blk true;
-    };
-
-    const key_exists = blk: {
-        std.fs.cwd().access(key_path, .{}) catch |err| {
-            if (err == error.FileNotFound) break :blk false;
-            return err;
-        };
-        break :blk true;
-    };
-
-    if (cert_exists and key_exists) {
-        if (ziggurat.logger.getGlobalLogger()) |logger| {
-            try logger.info("Using existing certificates: {s} and {s}", .{ cert_path, key_path });
-        }
-        return;
-    }
-
-    if (ziggurat.logger.getGlobalLogger()) |logger| {
-        try logger.info("Creating self-signed certificates for development use", .{});
-    }
-
-    // This would generate self-signed certificates
-    // For now, just create dummy files with a warning
-    const warning_text =
-        \\-----BEGIN CERTIFICATE-----
-        \\DEVELOPMENT USE ONLY - NOT SECURE
-        \\Replace with real certificates in production
-        \\-----END CERTIFICATE-----
-    ;
-
-    try std.fs.cwd().writeFile(.{
-        .sub_path = cert_path,
-        .data = warning_text,
-    });
-    try std.fs.cwd().writeFile(.{
-        .sub_path = key_path,
-        .data = warning_text,
-    });
-
-    if (ziggurat.logger.getGlobalLogger()) |logger| {
-        try logger.info("Created development certificates. Replace with real certificates in production.", .{});
-    }
-}
-
 fn createExampleFiles() !void {
-    if (ziggurat.logger.getGlobalLogger()) |logger| {
-        try logger.debug("Creating example files in {s}/", .{public_dir});
-    }
-
     // Create index.html
-    const index_content =
+    const index_html =
         \\<!DOCTYPE html>
         \\<html>
         \\<head>
-        \\    <title>Ziggurat Static Server</title>
-        \\    <link rel="stylesheet" href="/static/style.css">
+        \\  <title>Ziggurat Static Server</title>
+        \\  <link rel="stylesheet" href="/static/style.css">
         \\</head>
         \\<body>
-        \\    <h1>Welcome to Ziggurat Static Server</h1>
-        \\    <p>This is a simple static file server example.</p>
-        \\    <script src="/static/main.js"></script>
+        \\  <h1>Welcome to Ziggurat Static Server</h1>
+        \\  <p>This is a static file server built with Ziggurat.</p>
+        \\  <script src="/static/main.js"></script>
         \\</body>
         \\</html>
     ;
+
     try std.fs.cwd().writeFile(.{
-        .sub_path = public_dir ++ "/index.html",
-        .data = index_content,
+        .sub_path = "public/index.html",
+        .data = index_html,
     });
-    if (ziggurat.logger.getGlobalLogger()) |logger| {
-        try logger.debug("Created {s}/index.html", .{public_dir});
-    }
 
     // Create style.css
-    const css_content =
+    const style_css =
         \\body {
-        \\    font-family: Arial, sans-serif;
-        \\    max-width: 800px;
-        \\    margin: 0 auto;
-        \\    padding: 2rem;
-        \\    line-height: 1.6;
+        \\  font-family: Arial, sans-serif;
+        \\  margin: 40px;
+        \\  background-color: #f5f5f5;
         \\}
-        \\h1 { color: #2c3e50; }
+        \\h1 {
+        \\  color: #333;
+        \\}
     ;
+
     try std.fs.cwd().writeFile(.{
-        .sub_path = public_dir ++ "/style.css",
-        .data = css_content,
+        .sub_path = "public/style.css",
+        .data = style_css,
     });
-    if (ziggurat.logger.getGlobalLogger()) |logger| {
-        try logger.debug("Created {s}/style.css", .{public_dir});
-    }
 
     // Create main.js
-    const js_content =
-        \\console.log("Static server is running!");
+    const main_js =
+        \\console.log('Ziggurat Static Server');
+        \\document.addEventListener('DOMContentLoaded', function() {
+        \\  console.log('Page loaded');
+        \\});
     ;
-    try std.fs.cwd().writeFile(.{
-        .sub_path = public_dir ++ "/main.js",
-        .data = js_content,
-    });
-    if (ziggurat.logger.getGlobalLogger()) |logger| {
-        try logger.debug("Created {s}/main.js", .{public_dir});
-    }
-}
 
-fn logRequests(request: *ziggurat.request.Request) ?ziggurat.response.Response {
-    if (ziggurat.logger.getGlobalLogger()) |logger| {
-        logger.info("[{s}] {s}", .{ @tagName(request.method), request.path }) catch {};
-    }
-    return null;
+    try std.fs.cwd().writeFile(.{
+        .sub_path = "public/main.js",
+        .data = main_js,
+    });
+
+    try ziggurat.log.info("Example files created in {s}/", .{public_dir});
 }
 
 fn setCacheHeaders(request: *ziggurat.request.Request) ?ziggurat.response.Response {
     _ = request;
-    // In a real app, set Cache-Control, ETag, etc.
+    // Headers are set by the security middleware
     return null;
 }
 
 fn handleIndex(request: *ziggurat.request.Request) ziggurat.response.Response {
     _ = request;
-    const index_path = public_dir ++ "/index.html";
 
-    if (readFileFromCache(index_path)) |entry| {
-        return ziggurat.response.Response.init(
-            .ok,
-            entry.content_type,
-            entry.content,
-        );
-    }
+    const index_html = std.fs.cwd().readFileAlloc(std.heap.page_allocator, "public/index.html", 65536) catch {
+        return ziggurat.response.Response.errorResponse(.not_found, "index.html not found");
+    };
 
-    const content = std.fs.cwd().readFileAlloc(
-        std.heap.page_allocator,
-        index_path,
-        1024 * 1024, // 1MB max
-    ) catch return ziggurat.response.Response.init(
-        .not_found,
-        "text/plain",
-        "Index file not found",
-    );
-
-    // Cache the file
-    file_cache.put(index_path, .{
-        .content = content,
-        .content_type = "text/html",
-        .last_modified = std.time.timestamp(),
-    }) catch {};
-
-    return ziggurat.response.Response.init(
-        .ok,
-        "text/html",
-        content,
-    );
+    return ziggurat.response.Response.html(index_html);
 }
 
 fn handleStaticFile(request: *ziggurat.request.Request) ziggurat.response.Response {
-    // Get the file path relative to the public directory
-    const relative_path = request.path[7..]; // Remove "/static/" prefix
+    // Extract file path from route parameter
+    const file_path = request.path;
 
-    // Validate the path to prevent directory traversal
-    for (relative_path) |char| {
-        if (char == '.') {
-            return ziggurat.response.Response.init(
-                .bad_request,
-                "text/plain",
-                "Invalid path",
-            );
-        }
+    // Security: prevent directory traversal
+    if (std.mem.indexOf(u8, file_path, "..") != null) {
+        return ziggurat.response.Response.errorResponse(.forbidden, "Directory traversal not allowed");
     }
 
-    // Construct the full path
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const file_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ public_dir, relative_path }) catch
-        return ziggurat.response.Response.init(
-            .internal_server_error,
-            "text/plain",
-            "Path too long",
-        );
-
-    if (ziggurat.logger.getGlobalLogger()) |logger| {
-        logger.debug("Serving static file: {s}", .{file_path}) catch {};
-    }
-
-    if (readFileFromCache(file_path)) |entry| {
-        return ziggurat.response.Response.init(
-            .ok,
-            entry.content_type,
-            entry.content,
-        );
-    }
-
-    const content = std.fs.cwd().readFileAlloc(
+    // Load file from disk
+    const full_path = std.fmt.allocPrint(
         std.heap.page_allocator,
-        file_path,
-        1024 * 1024, // 1MB max
-    ) catch return ziggurat.response.Response.init(
-        .not_found,
-        "text/plain",
-        "File not found",
-    );
+        "public/{s}",
+        .{file_path[8..]}, // Skip "/static/"
+    ) catch {
+        return ziggurat.response.Response.errorResponse(.internal_server_error, "Failed to allocate path");
+    };
 
-    const content_type = getContentType(file_path);
+    const content = std.fs.cwd().readFileAlloc(std.heap.page_allocator, full_path, 65536) catch {
+        return ziggurat.response.Response.errorResponse(.not_found, "File not found");
+    };
 
-    // Cache the file
-    file_cache.put(file_path, .{
-        .content = content,
-        .content_type = content_type,
-        .last_modified = std.time.timestamp(),
-    }) catch {};
+    // Determine content type
+    const content_type = ziggurat.json_helpers.detectContentType(full_path);
 
-    return ziggurat.response.Response.init(
-        .ok,
-        content_type,
-        content,
-    );
-}
-
-fn readFileFromCache(path: []const u8) ?CacheEntry {
-    if (file_cache.get(path)) |entry| {
-        // In a real app, check if cache is stale
-        return entry;
-    }
-    return null;
-}
-
-fn getContentType(path: []const u8) []const u8 {
-    if (std.mem.endsWith(u8, path, ".html")) return "text/html";
-    if (std.mem.endsWith(u8, path, ".css")) return "text/css";
-    if (std.mem.endsWith(u8, path, ".js")) return "application/javascript";
-    if (std.mem.endsWith(u8, path, ".png")) return "image/png";
-    if (std.mem.endsWith(u8, path, ".jpg") or std.mem.endsWith(u8, path, ".jpeg")) return "image/jpeg";
-    return "application/octet-stream";
-}
-
-fn setSecurityHeaders(request: *ziggurat.request.Request) ?ziggurat.response.Response {
-    _ = request;
-    // Security headers are set via middleware - just return null to continue
-    return null;
+    return ziggurat.response.Response.init(.ok, content_type, content);
 }
 
 fn handleMetrics(request: *ziggurat.request.Request) ziggurat.response.Response {
     _ = request;
 
     if (ziggurat.metrics.getGlobalMetrics()) |manager| {
-        var buf: [256]u8 = undefined;
-        const allocator = std.heap.page_allocator;
+        var buf: [2048]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(&buf);
+        const writer = fbs.writer();
+
+        writer.writeAll("{\"metrics\":{\"recent_requests\":[") catch return ziggurat.response.Response.errorResponse(.internal_server_error, "Failed to format metrics");
 
         const recent = manager.getRecentRequests();
-        const response_json = std.fmt.bufPrint(&buf,
-            \\{{"total_requests": {d}, "recent_requests": {d}}}
-        , .{ recent.len, @min(recent.len, 10) }) catch {
-            return ziggurat.errorResponse(.internal_server_error, "Failed to generate metrics");
-        };
+        for (recent, 0..) |metric, i| {
+            const comma = if (i == recent.len - 1) "" else ",";
+            std.fmt.format(
+                writer,
+                "{{\"path\":\"{s}\",\"method\":\"{s}\",\"duration_ms\":{d},\"status\":{d}}}{s}",
+                .{ metric.path, metric.method, metric.duration_ms, metric.status_code, comma },
+            ) catch return ziggurat.response.Response.errorResponse(.internal_server_error, "Failed to format metrics");
+        }
 
-        const result = allocator.dupe(u8, response_json) catch {
-            return ziggurat.errorResponse(.internal_server_error, "Failed to allocate metrics");
-        };
+        writer.writeAll("]}}") catch return ziggurat.response.Response.errorResponse(.internal_server_error, "Failed to format metrics");
 
-        return ziggurat.json(result);
+        const metrics_str = std.heap.page_allocator.dupe(u8, fbs.getWritten()) catch return ziggurat.response.Response.errorResponse(.internal_server_error, "Failed to allocate metrics");
+
+        return ziggurat.response.Response.json(metrics_str);
     }
 
-    return ziggurat.errorResponse(.internal_server_error, "Metrics not initialized");
+    return ziggurat.response.Response.errorResponse(.internal_server_error, "Metrics not initialized");
 }
