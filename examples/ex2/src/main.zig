@@ -1,18 +1,10 @@
 //! Static file server example using the NEW Ziggurat API
-//! Demonstrates file serving with caching and security headers
+//! Demonstrates robust static file serving with logging, CORS, and live metrics
 
 const std = @import("std");
 const ziggurat = @import("ziggurat");
 
-// Simple in-memory cache for static files
-const CacheEntry = struct {
-    content: []const u8,
-    content_type: []const u8,
-    last_modified: i64,
-};
-
-var file_cache = std.StringHashMap(CacheEntry).init(std.heap.page_allocator);
-const public_dir = "public";
+var PUBLIC_DIR: []const u8 = "public";
 
 pub fn main() !void {
     // Initialize the server
@@ -29,11 +21,8 @@ pub fn main() !void {
     });
     defer ziggurat.features.deinitialize();
 
-    // Create public directory if it doesn't exist
-    try std.fs.cwd().makePath(public_dir);
-
-    // Create some example static files
-    try createExampleFiles();
+    // Ensure public directory exists (contains your static assets)
+    try std.fs.cwd().makePath(PUBLIC_DIR);
 
     var builder = ziggurat.ServerBuilder.init(allocator);
     var server = try builder
@@ -44,10 +33,9 @@ pub fn main() !void {
         .build();
     defer server.deinit();
 
-    // Add middleware in order: logging -> CORS -> caching -> security
+    // Add middleware in order: logging -> CORS
     try server.middleware(ziggurat.request_logger.requestLoggingMiddleware);
     try server.middleware(ziggurat.cors.corsMiddleware);
-    try server.middleware(setCacheHeaders);
 
     // Add routes
     try server.get("/", handleIndex);
@@ -112,14 +100,9 @@ fn createExampleFiles() !void {
         .data = main_js,
     });
 
-    try ziggurat.log.info("Example files created in {s}/", .{public_dir});
+    try ziggurat.log.info("Example files created in {s}/", .{PUBLIC_DIR});
 }
 
-fn setCacheHeaders(request: *ziggurat.request.Request) ?ziggurat.response.Response {
-    _ = request;
-    // Headers are set by the security middleware
-    return null;
-}
 
 fn handleIndex(request: *ziggurat.request.Request) ziggurat.response.Response {
     _ = request;

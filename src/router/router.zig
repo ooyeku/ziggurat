@@ -59,7 +59,15 @@ pub const Router = struct {
             return true;
         }
 
-        // Pattern contains parameters
+        // Support simple wildcard suffix: "/prefix/*" matches any path starting with "/prefix/"
+        if (pattern.len >= 2 and std.mem.endsWith(u8, pattern, "/*")) {
+            const prefix = pattern[0 .. pattern.len - 1]; // keep trailing '/'
+            if (std.mem.startsWith(u8, path, prefix)) {
+                return true;
+            }
+        }
+
+        // Pattern contains parameters of the form ":param"
         if (std.mem.indexOf(u8, pattern, ":") != null) {
             var pattern_segments = std.mem.splitScalar(u8, pattern, '/');
             var path_segments = std.mem.splitScalar(u8, path, '/');
