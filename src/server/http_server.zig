@@ -98,9 +98,12 @@ pub const HttpServer = struct {
         // Wrap socket with TLS if enabled
         const secured_socket = try self.tls.wrapSocket(socket);
 
+        // Start with initial buffer size, will reallocate if needed
         var buf = try self.allocator.alloc(u8, self.config.buffer_size);
         defer self.allocator.free(buf);
 
+        // Read first chunk
+        var total_read: usize = 0;
         const read = self.tls.read(secured_socket, buf) catch |err| {
             if (logging.getGlobalLogger()) |logger| {
                 try logger.err("Error reading from socket: {any}", .{err});
@@ -109,12 +112,136 @@ pub const HttpServer = struct {
         };
 
         if (read == 0) return; // Empty request
+        total_read = read;
 
+        // Find where headers end (\r\n\r\n)
+        const header_end_marker = "\r\n\r\n";
+        var header_end_pos: ?usize = null;
+
+        // Read until headers are complete
+        while (header_end_pos == null) {
+            if (std.mem.indexOf(u8, buf[0..total_read], header_end_marker)) |pos| {
+                header_end_pos = pos;
+                break;
+            }
+
+            // Headers not complete, need to read more
+            if (total_read >= buf.len) {
+                // Check if we've exceeded max header size
+                if (total_read > self.config.max_header_size) {
+                    const bad_request_response = Response.init(.request_header_fields_too_large, "text/plain", "Request Header Fields Too Large");
+                    const formatted_response = bad_request_response.format() catch return;
+                    defer std.heap.page_allocator.free(formatted_response);
+                    _ = self.writeTls(secured_socket, formatted_response) catch {};
+                    return;
+                }
+
+                // Reallocate buffer if we haven't exceeded max header size
+                const new_size = @min(buf.len * 2, self.config.max_header_size);
+                if (new_size > buf.len) {
+                    buf = try self.allocator.realloc(buf, new_size);
+                } else {
+                    // Can't grow buffer, headers too large
+                    const bad_request_response = Response.init(.request_header_fields_too_large, "text/plain", "Request Header Fields Too Large");
+                    const formatted_response = bad_request_response.format() catch return;
+                    defer std.heap.page_allocator.free(formatted_response);
+                    _ = self.writeTls(secured_socket, formatted_response) catch {};
+                    return;
+                }
+            }
+
+            // Read more data
+            const additional_read = self.tls.read(secured_socket, buf[total_read..]) catch |err| {
+                if (logging.getGlobalLogger()) |logger| {
+                    try logger.err("Error reading additional data: {any}", .{err});
+                }
+                return;
+            };
+
+            if (additional_read == 0) break; // No more data available
+            total_read += additional_read;
+        }
+
+        // Parse headers to get Content-Length
+        var temp_request = Request.init(self.allocator);
+        defer temp_request.deinit();
+
+        // Parse just to get headers (we'll re-parse with full body later)
+        temp_request.parse(buf[0..total_read]) catch |err| {
+            if (logging.getGlobalLogger()) |logger| {
+                try logger.err("Error parsing request headers: {any}", .{err});
+            }
+
+            const bad_request_response = Response.init(.bad_request, "text/plain", "Bad Request - Invalid HTTP Request Format");
+            const formatted_response = bad_request_response.format() catch |fmt_err| {
+                if (logging.getGlobalLogger()) |logger| {
+                    try logger.err("Error formatting response: {any}", .{fmt_err});
+                }
+                return;
+            };
+            defer std.heap.page_allocator.free(formatted_response);
+
+            _ = self.writeTls(secured_socket, formatted_response) catch |write_err| {
+                if (logging.getGlobalLogger()) |logger| {
+                    try logger.err("Error writing error response: {any}", .{write_err});
+                }
+            };
+
+            return;
+        };
+
+        // Check if we need to read more for the body
+        const content_length_str = temp_request.headers.get("Content-Length");
+        if (content_length_str) |cl_str| {
+            const expected_body_len = std.fmt.parseInt(usize, cl_str, 10) catch 0;
+            
+            // Calculate how much body we've already read
+            const header_len = if (header_end_pos) |pos| pos + header_end_marker.len else total_read;
+            const current_body_len = if (total_read > header_len) total_read - header_len else 0;
+
+            if (expected_body_len > current_body_len) {
+                // Need to read more body data
+                const remaining = expected_body_len - current_body_len;
+                
+                // Check if total request size would exceed max_body_size
+                const total_expected_size = header_len + expected_body_len;
+                if (total_expected_size > self.config.max_body_size) {
+                    const bad_request_response = Response.init(.payload_too_large, "text/plain", "Payload Too Large");
+                    const formatted_response = bad_request_response.format() catch return;
+                    defer std.heap.page_allocator.free(formatted_response);
+                    _ = self.writeTls(secured_socket, formatted_response) catch {};
+                    return;
+                }
+
+                // Reallocate buffer if needed
+                if (total_read + remaining > buf.len) {
+                    const new_size = @min(total_read + remaining, self.config.max_body_size);
+                    buf = try self.allocator.realloc(buf, new_size);
+                }
+
+                // Read remaining body data
+                var body_read: usize = 0;
+                while (body_read < remaining) {
+                    const chunk_read = self.tls.read(secured_socket, buf[total_read + body_read..]) catch |err| {
+                        if (logging.getGlobalLogger()) |logger| {
+                            try logger.err("Error reading body: {any}", .{err});
+                        }
+                        return;
+                    };
+
+                    if (chunk_read == 0) break; // No more data available
+                    body_read += chunk_read;
+                }
+
+                total_read += body_read;
+            }
+        }
+
+        // Now parse the complete request with all data
         var request = Request.init(self.allocator);
         defer request.deinit();
 
-        // Try to parse request, return 400 on failure
-        request.parse(buf[0..read]) catch |err| {
+        request.parse(buf[0..total_read]) catch |err| {
             if (logging.getGlobalLogger()) |logger| {
                 try logger.err("Error parsing request: {any}", .{err});
             }
