@@ -163,9 +163,14 @@ pub const Request = struct {
             }
         }
 
-        // The rest is body
-        if (lines.next()) |body| {
-            self.body = try self.allocator.dupe(u8, body);
+        // The rest is body - find where headers end and read everything after
+        // Headers end with a blank line (CRLF CRLF), so find that position
+        const header_end_marker = "\r\n\r\n";
+        if (std.mem.indexOf(u8, raw_request, header_end_marker)) |end_pos| {
+            const body_start = end_pos + header_end_marker.len;
+            if (body_start < raw_request.len) {
+                self.body = try self.allocator.dupe(u8, raw_request[body_start..]);
+            }
         }
     }
 };
