@@ -214,3 +214,19 @@ test "parse request with body" {
     try testing.expectEqualStrings("application/json", request.headers.get("Content-Type") orelse "");
     try testing.expectEqualStrings("{\"name\": \"John\"}", request.body);
 }
+
+test "parse request with multi-line body" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var request = Request.init(allocator);
+    defer request.deinit();
+
+    const raw_request = "POST /api/todos HTTP/1.1\r\nHost: localhost:8080\r\nContent-Type: application/json\r\nContent-Length: 57\r\n\r\n{\"title\":\"test\",\"description\":\"multi\nline\",\"priority\":\"high\"}";
+    try request.parse(raw_request);
+
+    try testing.expectEqual(Method.POST, request.method);
+    try testing.expectEqualStrings("/api/todos", request.path);
+    try testing.expectEqualStrings("application/json", request.headers.get("Content-Type") orelse "");
+    try testing.expectEqualStrings("{\"title\":\"test\",\"description\":\"multi\nline\",\"priority\":\"high\"}", request.body);
+}
