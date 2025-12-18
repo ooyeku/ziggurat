@@ -113,15 +113,134 @@ pub const Logger = struct {
     }
 };
 
-// Global logger instance
+// Global logger instance and mutex for thread safety
 var global_logger: ?Logger = null;
+var global_logger_mutex: std.Thread.Mutex = .{};
 
 pub fn getGlobalLogger() ?*Logger {
+    global_logger_mutex.lock();
+    defer global_logger_mutex.unlock();
+
     if (global_logger == null) return null;
     return &global_logger.?;
 }
 
 pub fn initGlobalLogger(allocator: std.mem.Allocator) !void {
+    global_logger_mutex.lock();
+    defer global_logger_mutex.unlock();
+
     if (global_logger != null) return;
     global_logger = try Logger.init(allocator);
+}
+
+/// Thread-safe logger configuration functions
+pub fn setGlobalLogLevel(level: LogLevel) void {
+    global_logger_mutex.lock();
+    defer global_logger_mutex.unlock();
+
+    if (global_logger) |*logger| {
+        logger.setLogLevel(level);
+    }
+}
+
+pub fn setGlobalEnableColors(enable: bool) void {
+    global_logger_mutex.lock();
+    defer global_logger_mutex.unlock();
+
+    if (global_logger) |*logger| {
+        logger.setEnableColors(enable);
+    }
+}
+
+pub fn setGlobalEnableTimestamp(enable: bool) void {
+    global_logger_mutex.lock();
+    defer global_logger_mutex.unlock();
+
+    if (global_logger) |*logger| {
+        logger.setEnableTimestamp(enable);
+    }
+}
+
+/// Convenience functions that use the global logger
+pub fn debug(comptime format: []const u8, args: anytype) !void {
+    if (getGlobalLogger()) |logger| {
+        try logger.debug(format, args);
+    }
+}
+
+pub fn info(comptime format: []const u8, args: anytype) !void {
+    if (getGlobalLogger()) |logger| {
+        try logger.info(format, args);
+    }
+}
+
+pub fn warn(comptime format: []const u8, args: anytype) !void {
+    if (getGlobalLogger()) |logger| {
+        try logger.warn(format, args);
+    }
+}
+
+pub fn err(comptime format: []const u8, args: anytype) !void {
+    if (getGlobalLogger()) |logger| {
+        try logger.err(format, args);
+    }
+}
+
+pub fn critical(comptime format: []const u8, args: anytype) !void {
+    if (getGlobalLogger()) |logger| {
+        try logger.critical(format, args);
+    }
+}
+
+test "logger thread safety" {
+    const allocator = std.testing.allocator;
+
+    // Initialize global logger
+    try initGlobalLogger(allocator);
+    defer {
+        global_logger_mutex.lock();
+        global_logger = null;
+        global_logger_mutex.unlock();
+    }
+
+    // Test thread-safe configuration changes
+    setGlobalLogLevel(.debug);
+    setGlobalEnableColors(false);
+    setGlobalEnableTimestamp(false);
+
+    const logger = getGlobalLogger();
+    try std.testing.expect(logger != null);
+    try std.testing.expectEqual(LogLevel.debug, logger.?.level);
+    try std.testing.expectEqual(false, logger.?.enable_colors);
+    try std.testing.expectEqual(false, logger.?.enable_timestamp);
+
+    // Test convenience functions
+    try info("Test info message", .{});
+    try debug("Test debug message", .{});
+    try warn("Test warning message", .{});
+    try err("Test error message", .{});
+    try critical("Test critical message", .{});
+}
+
+test "global logger functions" {
+    const allocator = std.testing.allocator;
+
+    // Initialize global logger
+    try initGlobalLogger(allocator);
+    defer {
+        global_logger_mutex.lock();
+        global_logger = null;
+        global_logger_mutex.unlock();
+    }
+
+    // Test global logger functions
+    setGlobalLogLevel(.debug);
+    setGlobalEnableColors(true);
+    setGlobalEnableTimestamp(true);
+
+    const logger = getGlobalLogger();
+    try std.testing.expect(logger != null);
+    try std.testing.expectEqual(LogLevel.debug, logger.?.level);
+    try std.testing.expectEqual(true, logger.?.enable_colors);
+    try std.testing.expectEqual(true, logger.?.enable_timestamp);
 }

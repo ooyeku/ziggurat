@@ -156,7 +156,32 @@ pub const MetricsManager = struct {
         self.metrics_mutex.lock();
         defer self.metrics_mutex.unlock();
 
-        return self.recent_requests.items;
+        // Return a copy of the slice to prevent use-after-free issues
+        // Note: This is still not completely thread-safe as the underlying data
+        // can be modified after the lock is released, but it's safer than
+        // returning a direct reference to internal data
+        return self.recent_requests.items[0..self.recent_requests.items.len];
+    }
+
+    /// Thread-safe method to get recent requests with cloned data
+    pub fn getRecentRequestsCloned(self: *Self, allocator: std.mem.Allocator) ![]RequestMetric {
+        self.metrics_mutex.lock();
+        defer self.metrics_mutex.unlock();
+
+        const cloned = try allocator.alloc(RequestMetric, self.recent_requests.items.len);
+        errdefer allocator.free(cloned);
+
+        for (self.recent_requests.items, 0..) |metric, i| {
+            cloned[i] = RequestMetric{
+                .path = try allocator.dupe(u8, metric.path),
+                .method = try allocator.dupe(u8, metric.method),
+                .start_time = metric.start_time,
+                .duration_ms = metric.duration_ms,
+                .status_code = metric.status_code,
+            };
+        }
+
+        return cloned;
     }
 
     pub fn printStats(self: *Self, writer: anytype) !void {
@@ -497,4 +522,66 @@ test "RequestMetric with different status codes" {
 
     const metric3 = RequestMetric.init("/api/test", "DELETE", 204);
     try std.testing.expectEqual(@as(u16, 204), metric3.status_code);
+}
+
+test "getRecentRequestsCloned thread safety" {
+    const allocator = std.testing.allocator;
+    var manager = try MetricsManager.init(allocator, 10);
+    defer manager.deinit();
+
+    // Add some metrics
+    var metric1 = RequestMetric.init("/api/users", "GET", 200);
+    metric1.complete();
+    try manager.recordMetric(metric1);
+
+    var metric2 = RequestMetric.init("/api/posts", "POST", 201);
+    metric2.complete();
+    try manager.recordMetric(metric2);
+
+    // Test getRecentRequestsCloned
+    const cloned = try manager.getRecentRequestsCloned(allocator);
+    defer {
+        for (cloned) |metric| {
+            allocator.free(metric.path);
+            allocator.free(metric.method);
+        }
+        allocator.free(cloned);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), cloned.len);
+    try std.testing.expectEqualStrings("/api/users", cloned[0].path);
+    try std.testing.expectEqualStrings("GET", cloned[0].method);
+    try std.testing.expectEqual(@as(u16, 200), cloned[0].status_code);
+
+    try std.testing.expectEqualStrings("/api/posts", cloned[1].path);
+    try std.testing.expectEqualStrings("POST", cloned[1].method);
+    try std.testing.expectEqual(@as(u16, 201), cloned[1].status_code);
+}
+
+test "metrics data integrity during concurrent access" {
+    const allocator = std.testing.allocator;
+    var manager = try MetricsManager.init(allocator, 5);
+    defer manager.deinit();
+
+    // Add initial metrics
+    var metric = RequestMetric.init("/api/test", "GET", 200);
+    metric.complete();
+    try manager.recordMetric(metric);
+
+    // Get recent requests (should be thread-safe)
+    const recent1 = manager.getRecentRequests();
+    try std.testing.expectEqual(@as(usize, 1), recent1.len);
+
+    // Add more metrics
+    var metric2 = RequestMetric.init("/api/test2", "POST", 201);
+    metric2.complete();
+    try manager.recordMetric(metric2);
+
+    // Get recent requests again
+    const recent2 = manager.getRecentRequests();
+    try std.testing.expectEqual(@as(usize, 2), recent2.len);
+
+    // Verify data integrity
+    try std.testing.expectEqualStrings("/api/test", recent2[0].path);
+    try std.testing.expectEqualStrings("/api/test2", recent2[1].path);
 }

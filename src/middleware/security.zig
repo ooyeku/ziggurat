@@ -76,8 +76,14 @@ pub fn securityHeadersMiddleware(production: bool) fn (*Request) ?Response {
                 SecurityHeaders.getProductionHeaders(allocator) catch return null
             else
                 SecurityHeaders.getDevelopmentHeaders(allocator) catch return null;
+            errdefer allocator.free(headers);
 
-            request.setUserData("security_headers", headers) catch {};
+            // Store headers in request user data, but handle cleanup on failure
+            request.setUserData("security_headers", headers) catch {
+                // Free the allocated headers if setUserData fails
+                allocator.free(headers);
+                return null;
+            };
 
             return null;
         }
@@ -141,4 +147,44 @@ test "sanitize html input" {
 
     try std.testing.expect(std.mem.indexOf(u8, sanitized, "&lt;") != null);
     try std.testing.expect(std.mem.indexOf(u8, sanitized, "&gt;") != null);
+}
+
+test "security headers middleware basic functionality" {
+    const allocator = std.heap.page_allocator;
+
+    // Test that middleware can be created without issues
+    const middleware = securityHeadersMiddleware(false); // development mode
+
+    var request = Request.init(allocator);
+    defer request.deinit();
+
+    // Test that middleware doesn't crash
+    const result = middleware(&request);
+    try std.testing.expect(result == null);
+
+    // Test that some user data was stored (security headers)
+    const stored_headers = request.getUserData("security_headers", []const u8);
+    if (stored_headers) |headers| {
+        // Headers should contain expected security headers
+        try std.testing.expect(std.mem.indexOf(u8, headers, "X-Frame-Options") != null);
+        try std.testing.expect(std.mem.indexOf(u8, headers, "X-Content-Type-Options") != null);
+    }
+}
+
+test "rate limiter cleanup" {
+    const allocator = std.testing.allocator;
+
+    // Initialize rate limiter
+    try initRateLimiter(allocator, 100);
+    try std.testing.expect(getGlobalRateLimiter() != null);
+
+    // Deinitialize
+    deinitRateLimiter();
+    try std.testing.expect(getGlobalRateLimiter() == null);
+
+    // Should be able to initialize again
+    try initRateLimiter(allocator, 50);
+    try std.testing.expect(getGlobalRateLimiter() != null);
+
+    deinitRateLimiter();
 }

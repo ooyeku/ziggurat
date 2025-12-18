@@ -103,7 +103,7 @@ pub const Router = struct {
     }
 
     // Extracts path parameters and stores them in the request
-    fn extractParams(pattern: []const u8, path: []const u8, request: *Request) !void {
+    pub fn extractParams(pattern: []const u8, path: []const u8, request: *Request) !void {
         if (std.mem.indexOf(u8, pattern, ":") == null) {
             return; // No parameters in pattern
         }
@@ -130,3 +130,80 @@ pub const Router = struct {
         }
     }
 };
+
+test "router parameter extraction error handling" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var router = Router.init(allocator);
+    defer router.deinit();
+
+    // Test successful parameter extraction
+    var request = @import("../http/request.zig").Request.init(allocator);
+    defer request.deinit();
+
+    try request.setUserData("existing_key", "value");
+
+    // Test extractParams with valid parameters
+    Router.extractParams("/users/:id/posts/:post_id", "/users/123/posts/456", &request) catch {
+        try testing.expect(false); // Should not fail
+    };
+
+    const id_param = request.getParam("id");
+    try testing.expect(id_param != null);
+    try testing.expectEqualStrings("123", id_param.?);
+
+    const post_id_param = request.getParam("post_id");
+    try testing.expect(post_id_param != null);
+    try testing.expectEqualStrings("456", post_id_param.?);
+}
+
+test "router parameter extraction with no parameters" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var router = Router.init(allocator);
+    defer router.deinit();
+
+    var request = @import("../http/request.zig").Request.init(allocator);
+    defer request.deinit();
+
+    // Test extractParams with no parameters in pattern
+    Router.extractParams("/users/profile", "/users/profile", &request) catch {
+        try testing.expect(false); // Should not fail
+    };
+
+    // Should have no parameters
+    const param = request.getParam("id");
+    try testing.expect(param == null);
+}
+
+test "router parameter extraction edge cases" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var router = Router.init(allocator);
+    defer router.deinit();
+
+    var request = @import("../http/request.zig").Request.init(allocator);
+    defer request.deinit();
+
+    // Test with empty parameter name (should be handled gracefully)
+    Router.extractParams("/users/:/posts/:post_id", "/users/123/posts/456", &request) catch {
+        // This should fail because empty parameter names aren't valid
+        // but the error should be caught by matchRoute
+    };
+
+    // Valid parameters should still work
+    Router.extractParams("/api/:version/users/:id", "/api/v1/users/789", &request) catch {
+        try testing.expect(false); // Should not fail
+    };
+
+    const version = request.getParam("version");
+    try testing.expect(version != null);
+    try testing.expectEqualStrings("v1", version.?);
+
+    const user_id = request.getParam("id");
+    try testing.expect(user_id != null);
+    try testing.expectEqualStrings("789", user_id.?);
+}
