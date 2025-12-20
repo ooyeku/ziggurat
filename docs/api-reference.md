@@ -7,7 +7,7 @@ Complete API documentation for Ziggurat
 Ziggurat provides **two API styles**:
 
 ### New API (Recommended) - Cleaner & More Intuitive
-Introduced in v2.0, this API is simpler and more discoverable. Use this for new projects.
+Use this for new projects.
 
 ```zig
 const ziggurat = @import("ziggurat");
