@@ -1,6 +1,6 @@
 # Ziggurat Usage Guide
 
-**Version 0.1.1** | **Zig 0.15.1+** | A modern HTTP server framework for Zig
+**Version 1.3.0** | **Zig 0.15.1+** | A modern HTTP server framework for Zig
 
 Welcome to the comprehensive guide for building web applications and APIs with Ziggurat. This guide covers everything from basic setup to advanced features like middleware, metrics, and TLS configuration.
 
@@ -44,7 +44,7 @@ Welcome to the comprehensive guide for building web applications and APIs with Z
 Add Ziggurat to your project using `zig fetch`:
 
 ```bash
-zig fetch https://github.com/ooyeku/ziggurat/archive/refs/tags/v1.0.0.tar.gz
+zig fetch https://github.com/ooyeku/ziggurat/archive/refs/tags/v1.3.0.tar.gz
 ```
 
 ### Build Configuration
@@ -57,7 +57,7 @@ Add the dependency to your `build.zig.zon`:
     .version = "1.0.0",
     .dependencies = .{
         .ziggurat = .{
-            .url = "https://github.com/ooyeku/ziggurat/archive/refs/tags/v0.1.1.tar.gz",
+            .url = "https://github.com/ooyeku/ziggurat/archive/refs/tags/v1.3.0.tar.gz",
             .hash = "<hash-from-zig-fetch>",
         },
     },

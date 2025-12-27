@@ -59,7 +59,7 @@ pub const Tls = struct {
         // In a real implementation, this would set up TLS on the socket
         // For now, we'll just return the original socket
         if (logging.getGlobalLogger()) |logger| {
-            try logger.debug("TLS: Wrapped socket {d}", .{socket});
+            try logger.debug("TLS: Wrapped socket {any}", .{socket});
         }
 
         return socket;

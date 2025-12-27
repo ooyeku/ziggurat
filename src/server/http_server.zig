@@ -194,7 +194,7 @@ pub const HttpServer = struct {
         const content_length_str = temp_request.headers.get("Content-Length");
         if (content_length_str) |cl_str| {
             const expected_body_len = std.fmt.parseInt(usize, cl_str, 10) catch 0;
-            
+
             // Calculate how much body we've already read
             const header_len = if (header_end_pos) |pos| pos + header_end_marker.len else total_read;
             const current_body_len = if (total_read > header_len) total_read - header_len else 0;
@@ -202,7 +202,7 @@ pub const HttpServer = struct {
             if (expected_body_len > current_body_len) {
                 // Need to read more body data
                 const remaining = expected_body_len - current_body_len;
-                
+
                 // Check if total request size would exceed max_body_size
                 const total_expected_size = header_len + expected_body_len;
                 if (total_expected_size > self.config.max_body_size) {
@@ -222,7 +222,7 @@ pub const HttpServer = struct {
                 // Read remaining body data
                 var body_read: usize = 0;
                 while (body_read < remaining) {
-                    const chunk_read = self.tls.read(secured_socket, buf[total_read + body_read..]) catch |err| {
+                    const chunk_read = self.tls.read(secured_socket, buf[total_read + body_read ..]) catch |err| {
                         if (logging.getGlobalLogger()) |logger| {
                             try logger.err("Error reading body: {any}", .{err});
                         }
@@ -346,16 +346,24 @@ pub const HttpServer = struct {
 
     // Add timeout handling
     fn setTimeouts(socket: posix.socket_t, config: *const ServerConfig) !void {
-        const read_timeout = posix.timeval{
-            .sec = @intCast(config.read_timeout_ms / 1000),
-            .usec = @intCast((config.read_timeout_ms % 1000) * 1000),
-        };
-        try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &std.mem.toBytes(read_timeout));
+        if (@import("builtin").os.tag == .windows) {
+            const read_timeout: u32 = @intCast(config.read_timeout_ms);
+            try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &std.mem.toBytes(read_timeout));
 
-        const write_timeout = posix.timeval{
-            .sec = @intCast(config.write_timeout_ms / 1000),
-            .usec = @intCast((config.write_timeout_ms % 1000) * 1000),
-        };
-        try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &std.mem.toBytes(write_timeout));
+            const write_timeout: u32 = @intCast(config.write_timeout_ms);
+            try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &std.mem.toBytes(write_timeout));
+        } else {
+            const read_timeout = posix.timeval{
+                .sec = @intCast(config.read_timeout_ms / 1000),
+                .usec = @intCast((config.read_timeout_ms % 1000) * 1000),
+            };
+            try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &std.mem.toBytes(read_timeout));
+
+            const write_timeout = posix.timeval{
+                .sec = @intCast(config.write_timeout_ms / 1000),
+                .usec = @intCast((config.write_timeout_ms % 1000) * 1000),
+            };
+            try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &std.mem.toBytes(write_timeout));
+        }
     }
 };
