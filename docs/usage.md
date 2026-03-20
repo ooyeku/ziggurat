@@ -1,6 +1,6 @@
 # Ziggurat Usage Guide
 
-**Version 1.3.0** | **Zig 0.15.1+** | A modern HTTP server framework for Zig
+**Version 1.2.0** | **Zig 0.15.1+** | A modern HTTP server framework for Zig
 
 Welcome to the comprehensive guide for building web applications and APIs with Ziggurat. This guide covers everything from basic setup to advanced features like middleware, metrics, and TLS configuration.
 
@@ -18,6 +18,8 @@ Welcome to the comprehensive guide for building web applications and APIs with Z
   - [Path Parameters](#path-parameters)
   - [Query Parameters](#query-parameters)
   - [Request User Data](#request-user-data)
+  - [Custom Response Headers](#custom-response-headers)
+  - [Graceful Shutdown](#graceful-shutdown)
   - [Environment Configuration](#environment-configuration)
 - [Security Features](#security-features)
   - [Rate Limiting](#rate-limiting)
@@ -44,7 +46,7 @@ Welcome to the comprehensive guide for building web applications and APIs with Z
 Add Ziggurat to your project using `zig fetch`:
 
 ```bash
-zig fetch --save "git+https://github.com/ooyeku/ziggurat.git"
+zig fetch https://github.com/ooyeku/ziggurat/archive/refs/tags/v1.2.0.tar.gz
 ```
 
 ### Build Configuration
@@ -57,7 +59,7 @@ Add the dependency to your `build.zig.zon`:
     .version = "1.0.0",
     .dependencies = .{
         .ziggurat = .{
-            .url = "git+https://github.com/ooyeku/ziggurat.git",
+            .url = "https://github.com/ooyeku/ziggurat/archive/refs/tags/v1.2.0.tar.gz",
             .hash = "<hash-from-zig-fetch>",
         },
     },
@@ -119,7 +121,7 @@ pub fn build(b: *std.Build) void {
 
 ## Quick Start
 
-Here's a minimal HTTP server in just a few lines:
+### New API (Recommended)
 
 ```zig
 const std = @import("std");
@@ -130,8 +132,12 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Initialize logger
-    try ziggurat.logger.initGlobalLogger(allocator);
+    // Initialize all features in one call
+    try ziggurat.features.initialize(allocator, .{
+        .logging = .{ .level = .info },
+        .metrics = .{ .max_requests = 1000 },
+    });
+    defer ziggurat.features.deinitialize();
 
     // Create and configure server
     var builder = ziggurat.ServerBuilder.init(allocator);
@@ -141,10 +147,40 @@ pub fn main() !void {
         .build();
     defer server.deinit();
 
-    // Add a route
     try server.get("/", handleRoot);
+    try server.start();
+}
 
-    // Start the server
+fn handleRoot(request: *ziggurat.request.Request) ziggurat.response.Response {
+    _ = request;
+    return ziggurat.json("{\"status\":\"ok\"}");
+}
+```
+
+### Classic API
+
+```zig
+const std = @import("std");
+const ziggurat = @import("ziggurat");
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Initialize logger and metrics separately
+    try ziggurat.logger.initGlobalLogger(allocator);
+    try ziggurat.metrics.initGlobalMetrics(allocator, 1000);
+    defer ziggurat.metrics.deinitGlobalMetrics();
+
+    var builder = ziggurat.ServerBuilder.init(allocator);
+    var server = try builder
+        .host("127.0.0.1")
+        .port(8080)
+        .build();
+    defer server.deinit();
+
+    try server.get("/", handleRoot);
     try server.start();
 }
 
@@ -172,7 +208,7 @@ curl http://localhost:8080/
 
 ### Server Builder
 
-Ziggurat uses the **Builder Pattern** for server configuration, providing a fluent API:
+Ziggurat uses the **Builder Pattern** for server configuration:
 
 ```zig
 var builder = ziggurat.ServerBuilder.init(allocator);
@@ -185,6 +221,17 @@ var server = try builder
     .bufferSize(4096)          // Read buffer size
     .build();
 defer server.deinit();
+```
+
+**Important:** Keep the builder alive until `.build()` is called. Do not chain from a temporary:
+
+```zig
+// CORRECT
+var b = ziggurat.ServerBuilder.init(allocator);
+var srv = try b.port(3000).build();
+
+// WRONG — undefined behaviour
+// var srv = try ziggurat.ServerBuilder.init(allocator).port(3000).build();
 ```
 
 #### Configuration Options
@@ -205,17 +252,26 @@ Route handlers receive a pointer to the `Request` and return a `Response`:
 
 ```zig
 fn myHandler(request: *ziggurat.request.Request) ziggurat.response.Response {
-    // Access request properties
-    const method = request.method;           // GET, POST, PUT, DELETE
-    const path = request.path;               // Request path
+    const method = request.method;           // GET, POST, PUT, DELETE, etc.
+    const path = request.path;               // Request path (without query string)
     const body = request.body;               // Request body (empty if none)
-    
+    const qs = request.query_string;         // Raw query string (after '?')
+
     // Access headers
     if (request.headers.get("Content-Type")) |content_type| {
-        // Use content_type
+        _ = content_type;
     }
-    
-    // Return response
+
+    // Access query parameters
+    if (request.getQuery("page")) |page| {
+        _ = page;
+    }
+
+    _ = method;
+    _ = path;
+    _ = body;
+    _ = qs;
+
     return ziggurat.json("{\"status\":\"ok\"}");
 }
 ```
@@ -225,7 +281,8 @@ fn myHandler(request: *ziggurat.request.Request) ziggurat.response.Response {
 ```zig
 pub const Request = struct {
     method: Method,                              // HTTP method
-    path: []const u8,                           // Request path
+    path: []const u8,                           // Request path (no query string)
+    query_string: []const u8,                   // Raw query string
     headers: std.StringHashMap([]const u8),     // Headers map
     body: []const u8,                           // Request body
     allocator: std.mem.Allocator,              // Request allocator
@@ -241,6 +298,9 @@ pub const Method = enum {
     POST,
     PUT,
     DELETE,
+    OPTIONS,
+    HEAD,
+    PATCH,
     UNKNOWN,
 };
 ```
@@ -256,46 +316,52 @@ return ziggurat.json("{\"message\":\"Success\"}");
 // Text response (200 OK)
 return ziggurat.text("Plain text response");
 
+// HTML response (200 OK)
+return ziggurat.response.Response.html("<h1>Hello</h1>");
+
 // Error responses
 return ziggurat.errorResponse(.not_found, "Resource not found");
 return ziggurat.errorResponse(.bad_request, "Invalid input");
 return ziggurat.errorResponse(.internal_server_error, "Server error");
 ```
 
-#### Custom Response
-
-For more control, create responses directly:
+#### Response Builder Pattern
 
 ```zig
-const ziggurat = @import("ziggurat");
+// Custom status
+return ziggurat.response.Response.json(data).withStatus(.created);
 
-fn customResponse(request: *ziggurat.request.Request) ziggurat.response.Response {
-    _ = request;
-    return ziggurat.response.Response.init(
-        .ok,                    // Status code
-        "application/xml",      // Content type
-        "<root>XML data</root>" // Body
-    );
-}
+// Custom headers
+const extra = [_][]const u8{"X-Request-Id: abc123"};
+return ziggurat.response.Response.json(data).withHeaders(&extra);
 ```
 
 #### Status Codes
 
-Available status codes via `ziggurat.Status`:
+Available via `ziggurat.response.StatusCode` or `ziggurat.Status`:
 
 ```zig
-.ok                                    // 200
-.created                               // 201
-.bad_request                           // 400
-.unauthorized                          // 401
-.forbidden                             // 403
-.not_found                             // 404
-.method_not_allowed                    // 405
-.request_timeout                       // 408
-.payload_too_large                     // 413
-.unsupported_media_type                // 415
-.request_header_fields_too_large       // 431
-.internal_server_error                 // 500
+.ok                          // 200
+.created                     // 201
+.accepted                    // 202
+.no_content                  // 204
+.moved_permanently           // 301
+.found                       // 302
+.not_modified                // 304
+.bad_request                 // 400
+.unauthorized                // 401
+.forbidden                   // 403
+.not_found                   // 404
+.method_not_allowed          // 405
+.request_timeout             // 408
+.conflict                    // 409
+.payload_too_large           // 413
+.unsupported_media_type      // 415
+.unprocessable_entity        // 422
+.too_many_requests           // 429
+.request_header_fields_too_large  // 431
+.internal_server_error       // 500
+.service_unavailable         // 503
 ```
 
 ### Routing
@@ -303,31 +369,17 @@ Available status codes via `ziggurat.Status`:
 Register routes using HTTP method-specific functions:
 
 ```zig
-// GET requests
 try server.get("/", handleIndex);
 try server.get("/users", handleUsers);
 try server.get("/users/:id", handleUserById);
-
-// POST requests
 try server.post("/users", handleCreateUser);
-try server.post("/login", handleLogin);
-
-// PUT requests
 try server.put("/users/:id", handleUpdateUser);
-
-// DELETE requests
 try server.delete("/users/:id", handleDeleteUser);
+try server.patch("/users/:id", handlePatchUser);
+try server.head("/users/:id", handleHeadUser);
 ```
 
-#### Route Matching
-
-Routes are matched in the order they're registered. The first matching route handles the request.
-
-```zig
-try server.get("/users", handleAllUsers);      // Matches: GET /users
-try server.get("/users/:id", handleUserById);  // Matches: GET /users/123
-try server.get("/users/:id/posts", handleUserPosts);  // Matches: GET /users/123/posts
-```
+Routes are matched in the order they're registered. If the path matches but the method does not, a **405 Method Not Allowed** response is returned automatically.
 
 ---
 
@@ -335,14 +387,7 @@ try server.get("/users/:id/posts", handleUserPosts);  // Matches: GET /users/123
 
 ### Middleware
 
-Middleware functions process requests **before** they reach route handlers. They can:
-- Log requests
-- Authenticate users
-- Add headers
-- Short-circuit with early responses
-- Store data in the request
-- Rate limit requests
-- Add security headers
+Middleware functions process requests **before** they reach route handlers.
 
 #### Middleware Signature
 
@@ -354,83 +399,37 @@ Return `null` to continue processing, or return a `Response` to short-circuit.
 
 #### Built-in Middleware
 
-Ziggurat includes several built-in middleware modules:
-
-**Request Logging Middleware**
 ```zig
-try server.middleware(ziggurat.request_logger.requestLoggingMiddleware);
-```
-Automatically logs incoming requests with method, path, and request ID.
+// Request logging
+try server.useMiddleware(ziggurat.request_logger.requestLoggingMiddleware);
 
-**CORS Middleware**
-```zig
+// CORS
 try ziggurat.cors.initGlobalCorsConfig(allocator);
-try server.middleware(ziggurat.cors.corsMiddleware);
-```
-Handles cross-origin requests and preflight OPTIONS.
+try server.useMiddleware(ziggurat.cors.corsMiddleware);
 
-**Session Middleware**
-```zig
+// Sessions
 try ziggurat.session_middleware.initGlobalSessionManager(allocator, 3600);
-try server.middleware(ziggurat.session_middleware.sessionMiddleware);
-```
-Manages user sessions with configurable TTL.
+try server.useMiddleware(ziggurat.session_middleware.sessionMiddleware);
 
-**Security Middleware**
-```zig
-try server.middleware(ziggurat.security.headers.securityMiddleware);
-```
-Adds essential security headers to responses (X-Frame-Options, X-Content-Type-Options, etc).
+// Security headers
+try server.useMiddleware(ziggurat.security.headers.securityMiddleware);
 
-**Rate Limiting Middleware**
-```zig
-try ziggurat.security.rate_limiter.initRateLimiter(allocator, 100); // 100 requests/minute
-try server.middleware(ziggurat.security.rate_limiter.rateLimitMiddleware);
-```
-Implements token bucket rate limiting.
-
-#### Example: Request Logging
-
-```zig
-fn logRequests(request: *ziggurat.request.Request) ?ziggurat.response.Response {
-    if (ziggurat.logger.getGlobalLogger()) |logger| {
-        logger.info("[{s}] {s}", .{ 
-            @tagName(request.method), 
-            request.path 
-        }) catch {};
-    }
-    return null; // Continue processing
-}
-
-// Add to server
-try server.middleware(logRequests);
+// Rate limiting
+try ziggurat.security.rate_limiter.initRateLimiter(allocator, 100);
+try server.useMiddleware(ziggurat.security.rate_limiter.rateLimitMiddleware);
 ```
 
-#### Example: Authentication
+#### Custom Middleware
 
 ```zig
 fn requireAuth(request: *ziggurat.request.Request) ?ziggurat.response.Response {
-    const auth_header = request.headers.get("Authorization");
-    
-    if (auth_header == null) {
-        return ziggurat.errorResponse(
-            .unauthorized,
-            "Missing Authorization header"
-        );
+    if (request.headers.get("Authorization") == null) {
+        return ziggurat.errorResponse(.unauthorized, "Missing Authorization header");
     }
-    
-    // Validate token...
-    if (!isValidToken(auth_header.?)) {
-        return ziggurat.errorResponse(
-            .unauthorized,
-            "Invalid token"
-        );
-    }
-    
-    return null; // Continue to handler
+    return null;
 }
 
-try server.middleware(requireAuth);
+try server.useMiddleware(requireAuth);
 ```
 
 #### Middleware Execution Order
@@ -438,9 +437,8 @@ try server.middleware(requireAuth);
 Middleware executes in the order it's added:
 
 ```zig
-try server.middleware(logRequests);                           // Runs first
-try server.middleware(requireAuth);                          // Runs second
-try server.middleware(ziggurat.security.headers.securityMiddleware);  // Runs third
+try server.useMiddleware(logRequests);      // Runs first
+try server.useMiddleware(requireAuth);      // Runs second
 // Then route handler runs
 ```
 
@@ -449,97 +447,77 @@ try server.middleware(ziggurat.security.headers.securityMiddleware);  // Runs th
 Extract dynamic values from URL paths using the `:parameter` syntax:
 
 ```zig
-// Register route with parameter
 try server.get("/users/:id", handleUserById);
-try server.get("/posts/:post_id/comments/:comment_id", handleComment);
 
 fn handleUserById(request: *ziggurat.request.Request) ziggurat.response.Response {
-    // Extract parameter
     const user_id = request.getParam("id") orelse {
         return ziggurat.errorResponse(.bad_request, "Missing id parameter");
     };
-    
-    // Use the parameter
-    const allocator = request.allocator;
-    const response_json = std.fmt.allocPrint(
-        allocator,
-        "{{\"user_id\":\"{s}\"}}",
-        .{user_id}
-    ) catch {
-        return ziggurat.errorResponse(.internal_server_error, "Failed to create response");
-    };
-    
-    return ziggurat.json(response_json);
-}
-```
-
-#### Multiple Parameters
-
-```zig
-try server.get("/api/:version/users/:user_id", handleVersionedUser);
-
-fn handleVersionedUser(request: *ziggurat.request.Request) ziggurat.response.Response {
-    const version = request.getParam("version") orelse "v1";
-    const user_id = request.getParam("user_id") orelse return ziggurat.errorResponse(
-        .bad_request,
-        "Missing user_id"
-    );
-    
-    // Use both parameters
-    // ...
+    _ = user_id;
+    return ziggurat.json("{\"user\":\"found\"}");
 }
 ```
 
 ### Query Parameters
 
-Parse query strings from URLs like `/search?q=zig&page=2`:
+Query strings are parsed at request time. Access individual parameters with `getQuery`:
 
 ```zig
-try server.get("/search", handleSearch);
-
 fn handleSearch(request: *ziggurat.request.Request) ziggurat.response.Response {
-    // Extract query parameters
     const query = request.getQuery("q") orelse "";
     const page = request.getQuery("page") orelse "1";
-    
-    // Use the parameters
-    const allocator = request.allocator;
-    const response_json = std.fmt.allocPrint(
-        allocator,
-        "{{\"query\":\"{s}\",\"page\":\"{s}\"}}",
-        .{ query, page }
-    ) catch {
-        return ziggurat.errorResponse(.internal_server_error, "Failed to create response");
-    };
-    
-    return ziggurat.json(response_json);
+    _ = query;
+    _ = page;
+    return ziggurat.json("{\"results\":[]}");
 }
 ```
+
+The raw query string is available via `request.query_string`.
 
 ### Request User Data
 
 Store and retrieve custom data in requests (useful for middleware passing data to handlers):
 
 ```zig
-// In middleware - store data
+// In middleware — store data
 fn authMiddleware(request: *ziggurat.request.Request) ?ziggurat.response.Response {
-    // Validate user and store user_id
-    try request.setUserData("user_id", "12345");
-    try request.setUserData("role", "admin");
+    request.setUserData("user_id", "12345") catch {};
     return null;
 }
 
-// In handler - retrieve data
+// In handler — retrieve data
 fn handleProfile(request: *ziggurat.request.Request) ziggurat.response.Response {
     const user_id = request.getUserData("user_id", []const u8) orelse {
         return ziggurat.errorResponse(.unauthorized, "Not authenticated");
     };
-    
-    const role = request.getUserData("role", []const u8) orelse "user";
-    
-    // Use the data...
+    _ = user_id;
+    return ziggurat.json("{\"profile\":\"ok\"}");
 }
 ```
+
+`setUserData` accepts `[]const u8`, numeric, and `bool` values. `getUserData` can cast values back to `[]const u8`, integer types, `f32`/`f64`, or `bool`.
+
+### Custom Response Headers
+
+Attach extra headers to any response:
+
+```zig
+const extra = [_][]const u8{
+    "X-Request-Id: abc123",
+    "Cache-Control: no-cache",
+};
+return ziggurat.json("{\"ok\":true}").withHeaders(&extra);
+```
+
+### Graceful Shutdown
+
+The server supports graceful shutdown:
+
+```zig
+server.stop();
+```
+
+This sets an atomic shutdown flag and closes the listener socket.
 
 ---
 
@@ -552,32 +530,14 @@ var builder = try ziggurat.ServerBuilder.fromEnv(allocator);
 var server = try builder.build();
 ```
 
-### Environment Variables
-
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
 | `ZIGGURAT_HOST` | string | `127.0.0.1` | Server host address |
 | `ZIGGURAT_PORT` | u16 | `8080` | Server port |
 | `ZIGGURAT_READ_TIMEOUT_MS` | u32 | `5000` | Read timeout (ms) |
 | `ZIGGURAT_WRITE_TIMEOUT_MS` | u32 | `5000` | Write timeout (ms) |
-| `ZIGGURAT_BUFFER_SIZE` | usize | `1024` | Buffer size for reading requests |
+| `ZIGGURAT_BUFFER_SIZE` | usize | `1024` | Buffer size |
 | `ZIGGURAT_DEBUG` | bool | `false` | Enable debug mode |
-
-### Environment Helper Functions
-
-```zig
-// Read a single environment variable
-const value = try ziggurat.config.EnvConfig.getEnv(allocator, "MY_VAR");
-
-// Read with default
-const host = try ziggurat.config.EnvConfig.getEnvOr(allocator, "HOST", "127.0.0.1");
-
-// Read integer with default
-const port = try ziggurat.config.EnvConfig.getEnvIntOr(u16, allocator, "PORT", 8080);
-
-// Read boolean with default
-const debug = try ziggurat.config.EnvConfig.getEnvBoolOr(allocator, "DEBUG", false);
-```
 
 ---
 
@@ -585,153 +545,63 @@ const debug = try ziggurat.config.EnvConfig.getEnvBoolOr(allocator, "DEBUG", fal
 
 ### Logging
 
-Ziggurat includes a built-in logging system with multiple log levels and colored output.
-
 #### Initialize Logger
 
 ```zig
-// Initialize the global logger
-try ziggurat.logger.initGlobalLogger(allocator);
+// New API
+try ziggurat.features.initialize(allocator, .{
+    .logging = .{ .level = .info },
+});
 
-// Get logger instance
-const logger = ziggurat.logger.getGlobalLogger().?;
+// Classic API
+try ziggurat.logger.initGlobalLogger(allocator);
 ```
 
 #### Log Levels
 
 ```zig
-// Debug - detailed diagnostic information
-try logger.debug("Variable value: {d}", .{some_value});
-
-// Info - general informational messages
+const logger = ziggurat.logger.getGlobalLogger().?;
+try logger.debug("Variable: {d}", .{some_value});
 try logger.info("Server started on port {d}", .{port});
-
-// Warn - warning messages for potentially harmful situations
-try logger.warn("Connection pool nearly full: {d}/{d}", .{current, max});
-
-// Error - error events that might still allow operation
-try logger.err("Failed to process request: {any}", .{err});
-
-// Critical - severe errors that may prevent operation
+try logger.warn("Connection pool nearly full", .{});
+try logger.err("Failed to process request", .{});
 try logger.critical("Database connection lost!", .{});
 ```
 
-#### Configure Logger
+#### Simplified Logging (New API)
 
 ```zig
-const logger = ziggurat.logger.getGlobalLogger().?;
-
-// Set minimum log level (default: info)
-logger.setLogLevel(.debug);  // Show all logs
-logger.setLogLevel(.warn);   // Only warnings and errors
-
-// Disable colors
-logger.setEnableColors(false);
-
-// Disable timestamps
-logger.setEnableTimestamp(false);
-```
-
-#### Log Output Format
-
-```
-[2024-01-15 14:32:45] [INFO] Server listening on http://127.0.0.1:8080
-[2024-01-15 14:32:50] [DEBUG] Client connected from 127.0.0.1:54321
-[2024-01-15 14:32:50] [INFO] [GET] /api/users
-[2024-01-15 14:32:51] [ERROR] Database query failed: ConnectionLost
+try ziggurat.log.info("Server started", .{});
+try ziggurat.log.debug("Value: {d}", .{42});
 ```
 
 ### Metrics
 
-Track server performance with the built-in metrics system.
-
 #### Initialize Metrics
 
 ```zig
-// Initialize with capacity for recent requests
+// New API
+try ziggurat.features.initialize(allocator, .{
+    .metrics = .{ .max_requests = 1000 },
+});
+
+// Classic API
 try ziggurat.metrics.initGlobalMetrics(allocator, 1000);
 defer ziggurat.metrics.deinitGlobalMetrics();
 ```
 
-#### Automatic Tracking
-
-Metrics are automatically recorded for all requests when initialized:
-- Request duration
-- Status codes
-- Endpoint-specific statistics
-- Timestamps
+Metrics are automatically recorded for all requests: duration, status codes, endpoint statistics, and timestamps.
 
 #### Access Metrics
 
 ```zig
-// Get metrics manager
 if (ziggurat.metrics.getGlobalMetrics()) |manager| {
-    // Get endpoint statistics
     const stats = try manager.getEndpointStats("GET", "/api/users");
     if (stats) |s| {
         const avg_ms = s.getAverageDuration();
-        const total = s.total_requests;
-        const min = s.min_duration_ms;
-        const max = s.max_duration_ms;
-    }
-    
-    // Get recent requests
-    const recent = manager.getRecentRequests();
-    for (recent) |metric| {
-        // Access: metric.path, metric.method, metric.duration_ms, metric.status_code
+        _ = avg_ms;
     }
 }
-```
-
-#### Create Metrics Endpoint
-
-```zig
-try server.get("/metrics", handleMetrics);
-
-fn handleMetrics(request: *ziggurat.request.Request) ziggurat.response.Response {
-    _ = request;
-    
-    const allocator = std.heap.page_allocator;
-    var metrics_json = std.ArrayList(u8).init(allocator);
-    defer metrics_json.deinit();
-    
-    const writer = metrics_json.writer();
-    
-    if (ziggurat.metrics.getGlobalMetrics()) |manager| {
-        // Build JSON with metrics data
-        try writer.writeAll("{\"endpoints\":[");
-        
-        // Iterate through endpoints and add stats
-        // (Implementation details depend on your needs)
-        
-        try writer.writeAll("]}");
-        
-        return ziggurat.json(metrics_json.items);
-    }
-    
-    return ziggurat.errorResponse(.internal_server_error, "Metrics not initialized");
-}
-```
-
-#### Metrics Data Structure
-
-```zig
-pub const RequestMetric = struct {
-    path: []const u8,
-    method: []const u8,
-    start_time: i64,
-    duration_ms: i64,
-    status_code: u16,
-};
-
-pub const EndpointStats = struct {
-    total_requests: u64,
-    total_duration_ms: i64,
-    min_duration_ms: i64,
-    max_duration_ms: i64,
-    
-    pub fn getAverageDuration(self: EndpointStats) f64;
-};
 ```
 
 ---
@@ -740,57 +610,20 @@ pub const EndpointStats = struct {
 
 ### TLS/HTTPS
 
-Enable HTTPS with TLS certificates:
-
 ```zig
+var builder = ziggurat.ServerBuilder.init(allocator);
 var server = try builder
     .host("0.0.0.0")
     .port(443)
-    .enableTls("path/to/cert.pem", "path/to/key.pem")
+    .enableTls("cert.pem", "key.pem")
     .build();
 ```
 
-#### Generate Self-Signed Certificates (Development Only)
+Generate self-signed certificates for development:
 
 ```bash
-# Generate private key
 openssl genrsa -out key.pem 2048
-
-# Generate certificate
 openssl req -new -x509 -key key.pem -out cert.pem -days 365
-```
-
-**Warning:** Self-signed certificates are for development only. Use proper CA-signed certificates in production.
-
-#### Production Setup Example
-
-```zig
-const std = @import("std");
-const ziggurat = @import("ziggurat");
-
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    try ziggurat.logger.initGlobalLogger(allocator);
-    const logger = ziggurat.logger.getGlobalLogger().?;
-
-    var builder = ziggurat.ServerBuilder.init(allocator);
-    var server = try builder
-        .host("0.0.0.0")
-        .port(443)
-        .readTimeout(30000)
-        .writeTimeout(30000)
-        .enableTls("/etc/ssl/certs/server.crt", "/etc/ssl/private/server.key")
-        .build();
-    defer server.deinit();
-
-    try server.get("/", handleRoot);
-    
-    try logger.info("HTTPS server listening on port 443", .{});
-    try server.start();
-}
 ```
 
 ---
@@ -799,99 +632,41 @@ pub fn main() !void {
 
 ### Rate Limiting
 
-Protect your API from abuse with token bucket rate limiting:
-
 ```zig
-const allocator = std.heap.page_allocator;
-
-// Initialize rate limiter (100 requests per minute per IP)
 try ziggurat.security.rate_limiter.initRateLimiter(allocator, 100);
 defer ziggurat.security.rate_limiter.deinitRateLimiter();
-
-// Add to middleware
-try server.middleware(ziggurat.security.rate_limiter.rateLimitMiddleware);
+try server.useMiddleware(ziggurat.security.rate_limiter.rateLimitMiddleware);
 ```
 
 ### Security Headers
 
-Automatically add security headers to all responses:
-
 ```zig
-// Enable security middleware
-try server.middleware(ziggurat.security.headers.securityMiddleware);
-
-// Get production headers
-const prod_headers = try ziggurat.security.headers.getProductionHeaders(allocator);
-
-// Get development headers (less strict)
-const dev_headers = try ziggurat.security.headers.getDevelopmentHeaders(allocator);
-
-// Sanitize HTML input
-const safe_html = try ziggurat.security.headers.sanitizeHtmlInput(allocator, user_input);
+try server.useMiddleware(ziggurat.security.headers.securityMiddleware);
 ```
 
 ### Sessions
 
-Store user session data across requests:
-
 ```zig
-// Initialize session manager with 1-hour TTL
 try ziggurat.session_middleware.initGlobalSessionManager(allocator, 3600);
 defer ziggurat.session_middleware.deinitGlobalSessionManager();
-
-// Add session middleware
-try server.middleware(ziggurat.session_middleware.sessionMiddleware);
-
-// In handler - store session data
-fn handleLogin(request: *ziggurat.request.Request) ziggurat.response.Response {
-    const user_id = "user123";
-    try ziggurat.session_middleware.setSessionValue(request, "user_id", user_id);
-    return ziggurat.json("{\"status\":\"logged_in\"}");
-}
-
-// In handler - retrieve session data
-fn handleProfile(request: *ziggurat.request.Request) ziggurat.response.Response {
-    const user_id = ziggurat.session_middleware.getSessionValue(request, "user_id") orelse {
-        return ziggurat.errorResponse(.unauthorized, "Not logged in");
-    };
-    
-    return ziggurat.json("{\"user_id\":\"" ++ user_id ++ "\"}");
-}
+try server.useMiddleware(ziggurat.session_middleware.sessionMiddleware);
 ```
 
 ### CORS Configuration
 
-Enable cross-origin requests:
-
 ```zig
-// Initialize CORS
 try ziggurat.cors.initGlobalCorsConfig(allocator);
 defer ziggurat.cors.deinitGlobalCorsConfig();
-
-// Add CORS middleware
-try server.middleware(ziggurat.cors.corsMiddleware);
+try server.useMiddleware(ziggurat.cors.corsMiddleware);
 ```
+
+CORS handles preflight OPTIONS requests automatically and injects `Access-Control-Allow-Origin` headers on non-preflight responses.
 
 ### Error Handler
 
-Standardize error responses with the error handler:
-
 ```zig
-// Initialize error handler (debug_mode: false for production)
 try ziggurat.error_handler.initGlobalErrorHandler(allocator, false);
 defer ziggurat.error_handler.deinitGlobalErrorHandler();
-
-// Create standardized error response
-fn handleNotFound(request: *ziggurat.request.Request) ziggurat.response.Response {
-    _ = request;
-    const error_response = try ziggurat.error_handler.createErrorResponse(
-        allocator,
-        .not_found,
-        "RESOURCE_NOT_FOUND",
-        "The requested resource does not exist"
-    );
-    return error_response;
-}
 ```
 
 ---
@@ -915,22 +690,6 @@ pub const ServerConfig = struct {
 };
 ```
 
-### Timeouts
-
-```zig
-// Short timeouts for API endpoints
-var server = try builder
-    .readTimeout(5000)   // 5 seconds
-    .writeTimeout(5000)
-    .build();
-
-// Longer timeouts for file uploads
-var server = try builder
-    .readTimeout(60000)  // 60 seconds
-    .writeTimeout(60000)
-    .build();
-```
-
 ---
 
 ## Complete Examples
@@ -941,226 +700,82 @@ var server = try builder
 const std = @import("std");
 const ziggurat = @import("ziggurat");
 
-const User = struct {
-    id: u32,
-    name: []const u8,
-};
-
-var users = std.ArrayList(User).init(std.heap.page_allocator);
-
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    try ziggurat.logger.initGlobalLogger(allocator);
-    try ziggurat.metrics.initGlobalMetrics(allocator, 1000);
-    defer ziggurat.metrics.deinitGlobalMetrics();
+    try ziggurat.features.initialize(allocator, .{
+        .logging = .{ .level = .info },
+        .metrics = .{ .max_requests = 1000 },
+    });
+    defer ziggurat.features.deinitialize();
 
     var builder = ziggurat.ServerBuilder.init(allocator);
-    var server = try builder
-        .host("127.0.0.1")
-        .port(3000)
-        .build();
+    var server = try builder.host("127.0.0.1").port(3000).build();
     defer server.deinit();
 
-    // Middleware
-    try server.middleware(logRequests);
+    try server.useMiddleware(ziggurat.request_logger.requestLoggingMiddleware);
 
-    // Routes
     try server.get("/users", handleListUsers);
     try server.get("/users/:id", handleGetUser);
     try server.post("/users", handleCreateUser);
-    try server.put("/users/:id", handleUpdateUser);
-    try server.delete("/users/:id", handleDeleteUser);
 
     try server.start();
 }
 
-fn logRequests(request: *ziggurat.request.Request) ?ziggurat.response.Response {
-    if (ziggurat.logger.getGlobalLogger()) |logger| {
-        logger.info("[{s}] {s}", .{ @tagName(request.method), request.path }) catch {};
-    }
-    return null;
-}
-
 fn handleListUsers(request: *ziggurat.request.Request) ziggurat.response.Response {
     _ = request;
-    const json = "{\"users\":[{\"id\":1,\"name\":\"Alice\"},{\"id\":2,\"name\":\"Bob\"}]}";
-    return ziggurat.json(json);
+    return ziggurat.json("{\"users\":[]}");
 }
 
 fn handleGetUser(request: *ziggurat.request.Request) ziggurat.response.Response {
     const id = request.getParam("id") orelse {
         return ziggurat.errorResponse(.bad_request, "Missing id");
     };
-    
-    const allocator = request.allocator;
-    const json = std.fmt.allocPrint(
-        allocator,
-        "{{\"id\":\"{s}\",\"name\":\"User {s}\"}}",
-        .{ id, id }
-    ) catch {
-        return ziggurat.errorResponse(.internal_server_error, "Failed to create response");
-    };
-    
-    return ziggurat.json(json);
+    _ = id;
+    return ziggurat.json("{\"user\":\"found\"}");
 }
 
 fn handleCreateUser(request: *ziggurat.request.Request) ziggurat.response.Response {
     if (request.body.len == 0) {
-        return ziggurat.errorResponse(.bad_request, "Empty request body");
+        return ziggurat.errorResponse(.bad_request, "Empty body");
     }
-    
-    // Parse body and create user...
-    return ziggurat.json("{\"id\":3,\"name\":\"New User\",\"created\":true}");
-}
-
-fn handleUpdateUser(request: *ziggurat.request.Request) ziggurat.response.Response {
-    const id = request.getParam("id") orelse {
-        return ziggurat.errorResponse(.bad_request, "Missing id");
-    };
-    
-    _ = id;
-    // Update user logic...
-    return ziggurat.json("{\"success\":true}");
-}
-
-fn handleDeleteUser(request: *ziggurat.request.Request) ziggurat.response.Response {
-    const id = request.getParam("id") orelse {
-        return ziggurat.errorResponse(.bad_request, "Missing id");
-    };
-    
-    _ = id;
-    // Delete user logic...
-    return ziggurat.json("{\"deleted\":true}");
+    return ziggurat.response.Response.json("{\"created\":true}").withStatus(.created);
 }
 ```
 
 ### Static File Server
 
-See [examples/ex2](../examples/ex2) for a complete static file server with:
-- File caching
-- Content type detection
-- Path security (preventing directory traversal)
-- HTTPS support
+See [examples/ex2](../examples/ex2) for a complete static file server.
 
 ---
 
 ## Best Practices
 
-### Memory Management
-
-```zig
-// Always use defer for cleanup
-var server = try builder.build();
-defer server.deinit();
-
-// Use arena allocators for request-scoped allocations
-var arena = std.heap.ArenaAllocator.init(allocator);
-defer arena.deinit();
-const request_allocator = arena.allocator();
-```
-
-### Error Handling
-
-```zig
-fn safeHandler(request: *ziggurat.request.Request) ziggurat.response.Response {
-    const data = fetchData() catch {
-        return ziggurat.errorResponse(
-            .internal_server_error,
-            "Failed to fetch data"
-        );
-    };
-    
-    // Use data...
-}
-```
-
-### Logging Strategy
-
-```zig
-// Debug: Detailed diagnostics during development
-try logger.debug("Processing request with params: {any}", .{params});
-
-// Info: Important runtime events
-try logger.info("User {s} logged in", .{username});
-
-// Warn: Recoverable issues
-try logger.warn("API rate limit approaching for user {s}", .{user_id});
-
-// Error: Error conditions that need attention
-try logger.err("Database query failed: {any}", .{err});
-
-// Critical: System-threatening issues
-try logger.critical("Out of memory!", .{});
-```
-
-### Performance Optimization
-
-```zig
-// Use appropriate buffer sizes
-.bufferSize(4096)  // For typical requests
-.bufferSize(8192)  // For larger payloads
-
-// Set realistic timeouts
-.readTimeout(5000)   // 5 seconds for APIs
-.writeTimeout(5000)
-
-// Initialize metrics for monitoring
-try ziggurat.metrics.initGlobalMetrics(allocator, 1000);
-```
+- **Memory**: Pass allocators explicitly. Use `defer deinit()`. The server uses arena allocators per connection automatically.
+- **Middleware**: Return `null` to continue, `Response` to short-circuit. Add in order of priority.
+- **Error Handling**: Use `catch` in handlers to convert errors to responses.
+- **Logging**: Use `.debug` for development, `.info` for production.
+- **Shutdown**: Call `server.stop()` for graceful shutdown.
 
 ---
 
 ## Troubleshooting
 
-### Common Issues
+### Port Already in Use
 
-#### Port Already in Use
-
-```
-Error: AddressInUse
-```
-
-**Solution:** Check if another process is using the port:
 ```bash
 lsof -i :8080
 ```
 
-Change to a different port:
+### Request Timeout
+
 ```zig
-.port(3000)
+.readTimeout(30000).writeTimeout(30000)
 ```
 
-#### Request Timeout
-
-```
-Error: RequestTimeout
-```
-
-**Solution:** Increase timeout values:
-```zig
-.readTimeout(30000)  // 30 seconds
-.writeTimeout(30000)
-```
-
-#### TLS Certificate Errors
-
-```
-Error: MissingCertificateFile
-```
-
-**Solution:** Verify certificate paths exist:
-```zig
-// Check if files exist before starting
-try std.fs.cwd().access("cert.pem", .{});
-try std.fs.cwd().access("key.pem", .{});
-```
-
-### Debug Mode
-
-Enable debug logging to diagnose issues:
+### Debug Logging
 
 ```zig
 const logger = ziggurat.logger.getGlobalLogger().?;
@@ -1170,28 +785,10 @@ logger.setLogLevel(.debug);
 ### Testing Your Server
 
 ```bash
-# Basic connectivity
 curl http://localhost:8080/
-
-# With verbose output
 curl -v http://localhost:8080/
-
-# POST request with body
-curl -X POST -H "Content-Type: application/json" \
-  -d '{"name":"test"}' \
-  http://localhost:8080/users
-
-# Test HTTPS (accept self-signed cert)
-curl -k https://localhost:443/
+curl -X POST -H "Content-Type: application/json" -d '{"name":"test"}' http://localhost:8080/users
 ```
-
----
-
-## Additional Resources
-
-- [Examples Directory](../examples/) - Complete working examples
-- [GitHub Repository](https://github.com/ooyeku/ziggurat)
-- [Zig Documentation](https://ziglang.org/documentation/)
 
 ---
 
@@ -1199,8 +796,8 @@ curl -k https://localhost:443/
 
 ```zig
 // Server setup
-var server = try ziggurat.ServerBuilder.init(allocator)
-    .host("127.0.0.1").port(8080).build();
+var builder = ziggurat.ServerBuilder.init(allocator);
+var server = try builder.host("127.0.0.1").port(8080).build();
 defer server.deinit();
 
 // Routes
@@ -1208,31 +805,29 @@ try server.get("/path", handler);
 try server.post("/path", handler);
 try server.put("/path", handler);
 try server.delete("/path", handler);
+try server.patch("/path", handler);
+try server.head("/path", handler);
 
 // Middleware
-try server.middleware(myMiddleware);
+try server.useMiddleware(myMiddleware);
 
 // Responses
 return ziggurat.json(json_string);
 return ziggurat.text(text_string);
 return ziggurat.errorResponse(.not_found, "Not found");
+return ziggurat.response.Response.json(data).withStatus(.created);
 
 // Request data
 const param = request.getParam("id");
 const query = request.getQuery("search");
 const header = request.headers.get("Authorization");
 const body = request.body;
+const qs = request.query_string;
 
-// Logging
-try logger.info("message", .{});
-try logger.debug("value: {d}", .{value});
-try logger.err("error: {any}", .{err});
+// User data (middleware → handler)
+try request.setUserData("key", "value");
+const val = request.getUserData("key", []const u8);
 
-// Metrics
-try ziggurat.metrics.initGlobalMetrics(allocator, 1000);
-const stats = try manager.getEndpointStats("GET", "/api/users");
+// Shutdown
+server.stop();
 ```
-
----
-
-**Happy building with Ziggurat!**

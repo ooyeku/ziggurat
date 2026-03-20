@@ -114,10 +114,9 @@ test "test request builder" {
     var builder = TestRequestBuilder.init(allocator, "/api/users");
     defer builder.deinit();
 
-    var request = try builder
-        .withMethod(.POST)
-        .withHeader("Content-Type", "application/json")
-        .buildRequest();
+    _ = builder.withMethod(.POST);
+    _ = try builder.withHeader("Content-Type", "application/json");
+    var request = try builder.buildRequest();
     defer request.deinit();
 
     try testing.expectEqual(Method.POST, request.method);
@@ -130,13 +129,12 @@ test "test request builder with multiple headers" {
     var builder = TestRequestBuilder.init(allocator, "/api/data");
     defer builder.deinit();
 
-    var request = try builder
-        .withMethod(.PUT)
-        .withHeader("Content-Type", "application/json")
-        .withHeader("Authorization", "Bearer token123")
-        .withHeader("X-Custom-Header", "custom-value")
-        .withBody("{\"data\":\"value\"}")
-        .buildRequest();
+    _ = builder.withMethod(.PUT);
+    _ = try builder.withHeader("Content-Type", "application/json");
+    _ = try builder.withHeader("Authorization", "Bearer token123");
+    _ = try builder.withHeader("X-Custom-Header", "custom-value");
+    _ = builder.withBody("{\"data\":\"value\"}");
+    var request = try builder.buildRequest();
     defer request.deinit();
 
     try testing.expectEqual(Method.PUT, request.method);
@@ -183,7 +181,7 @@ test "response assertions expect body contains" {
     const response = Response.init(.ok, "application/json", "{\"status\":\"ok\",\"message\":\"Success\"}");
 
     var assertions = ResponseAssertions.init(allocator, response);
-    try assertions.expectBodyContains("success");
+    try assertions.expectBodyContains("Success");
 }
 
 test "response assertions expect content type" {

@@ -10,7 +10,9 @@ pub const HttpError = error{
     InternalServerError,
     NotFound,
     MethodNotAllowed,
-    // Add more specific error types
+    TooManyRequests,
+    ServiceUnavailable,
+    UnprocessableEntity,
 };
 
 pub fn errorToResponse(err: HttpError) Response {
@@ -54,6 +56,21 @@ pub fn errorToResponse(err: HttpError) Response {
             .method_not_allowed,
             "text/plain",
             "Method Not Allowed",
+        ),
+        HttpError.TooManyRequests => Response.init(
+            .too_many_requests,
+            "text/plain",
+            "Too Many Requests",
+        ),
+        HttpError.ServiceUnavailable => Response.init(
+            .service_unavailable,
+            "text/plain",
+            "Service Unavailable",
+        ),
+        HttpError.UnprocessableEntity => Response.init(
+            .unprocessable_entity,
+            "text/plain",
+            "Unprocessable Entity",
         ),
     };
 }

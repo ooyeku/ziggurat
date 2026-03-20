@@ -4,62 +4,52 @@
 const std = @import("std");
 const testing = std.testing;
 
-/// Token bucket for rate limiting
+/// Token bucket for rate limiting.
+/// Thread-safety is provided by the containing RateLimiter's mutex —
+/// TokenBucket itself has no lock to avoid nested-mutex deadlocks.
 pub const TokenBucket = struct {
     tokens: f64,
     max_tokens: f64,
     refill_rate: f64, // tokens per millisecond
     last_refill: i64, // milliseconds since epoch
-    mutex: std.Thread.Mutex = .{},
 
     pub fn init(max_tokens: f64, refill_rate_per_second: f64) TokenBucket {
         return .{
             .tokens = max_tokens,
             .max_tokens = max_tokens,
-            .refill_rate = refill_rate_per_second / 1000.0, // convert to per-ms
+            .refill_rate = refill_rate_per_second / 1000.0,
             .last_refill = std.time.milliTimestamp(),
         };
     }
 
-    /// Try to consume tokens. Returns true if successful, false if rate limited.
+    /// Try to consume tokens. Caller must hold RateLimiter.mutex.
+    /// Returns true if successful, false if rate limited.
     pub fn tryConsume(self: *TokenBucket, tokens: f64) bool {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
         self.refill();
-
         if (self.tokens >= tokens) {
             self.tokens -= tokens;
             return true;
         }
-
         return false;
     }
 
-    /// Refill tokens based on elapsed time
+    /// Refill tokens based on elapsed time. Caller must hold RateLimiter.mutex.
     fn refill(self: *TokenBucket) void {
         const now = std.time.milliTimestamp();
         const elapsed = now - self.last_refill;
         const new_tokens = @as(f64, @floatFromInt(elapsed)) * self.refill_rate;
-
         self.tokens = @min(self.tokens + new_tokens, self.max_tokens);
         self.last_refill = now;
     }
 
-    /// Reset the bucket to full
+    /// Reset the bucket to full. Caller must hold RateLimiter.mutex.
     pub fn reset(self: *TokenBucket) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
         self.tokens = self.max_tokens;
         self.last_refill = std.time.milliTimestamp();
     }
 
-    /// Get current token count
+    /// Get current token count. Caller must hold RateLimiter.mutex.
     pub fn getTokenCount(self: *TokenBucket) f64 {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
         self.refill();
         return self.tokens;
     }
@@ -90,7 +80,9 @@ pub const RateLimiter = struct {
         self.buckets.deinit();
     }
 
-    /// Check if a key (IP address, user ID, etc.) is within rate limit
+    /// Check if a key (IP address, user ID, etc.) is within rate limit.
+    /// All bucket operations are performed while holding self.mutex; TokenBucket
+    /// has no lock of its own, so there is no nested-mutex risk.
     pub fn isAllowed(self: *RateLimiter, key: []const u8) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -99,16 +91,18 @@ pub const RateLimiter = struct {
             return bucket.tryConsume(1.0);
         }
 
-        // Create new bucket for this key
+        // Create a new bucket for this key, consuming one token immediately.
         const key_copy = self.allocator.dupe(u8, key) catch return false;
         var bucket = TokenBucket.init(self.max_tokens, self.refill_rate);
-        _ = bucket.tryConsume(1.0); // consume one token immediately
-        self.buckets.put(key_copy, bucket) catch return false;
-
+        _ = bucket.tryConsume(1.0);
+        self.buckets.put(key_copy, bucket) catch {
+            self.allocator.free(key_copy);
+            return false;
+        };
         return true;
     }
 
-    /// Get remaining tokens for a key
+    /// Get remaining tokens for a key.
     pub fn getRemainingTokens(self: *RateLimiter, key: []const u8) f64 {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -116,18 +110,17 @@ pub const RateLimiter = struct {
         if (self.buckets.getPtr(key)) |bucket| {
             return bucket.getTokenCount();
         }
-
         return self.max_tokens;
     }
 
-    /// Reset all buckets
+    /// Reset all buckets to full.
     pub fn resetAll(self: *RateLimiter) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
         var it = self.buckets.iterator();
         while (it.next()) |entry| {
-            entry.value_ptr.reset();
+            entry.value_ptr.reset(); // safe: bucket has no mutex; we hold self.mutex
         }
     }
 };

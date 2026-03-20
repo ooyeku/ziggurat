@@ -24,10 +24,9 @@ const tls = @import("server/tls.zig");
 const tls_test = @import("server/tls_test.zig");
 const metrics = @import("metrics.zig");
 
-// Note: json_helpers and test_client have compilation errors due to Zig 0.15 API changes
-// They are temporarily excluded until the APIs are updated
-// const json_helpers = @import("utils/json_helpers.zig");
-// const test_client = @import("testing/test_client.zig");
+const json_helpers = @import("utils/json_helpers.zig");
+const test_client = @import("testing/test_client.zig");
+const root = @import("root.zig");
 
 test {
     // Force all imported modules to be analyzed for tests
@@ -50,4 +49,7 @@ test {
     _ = tls;
     _ = tls_test;
     _ = metrics;
+    _ = json_helpers;
+    _ = test_client;
+    _ = root;
 }

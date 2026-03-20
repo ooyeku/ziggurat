@@ -7,9 +7,30 @@ const Response = @import("../http/response.zig").Response;
 const StatusCode = @import("../http/response.zig").StatusCode;
 const router = @import("../router/router.zig");
 const middleware = @import("../middleware/middleware.zig");
+const cors = @import("../middleware/cors.zig");
 const logging = @import("../utils/logging.zig");
 const metrics = @import("../metrics.zig");
 const Tls = @import("tls.zig").Tls;
+
+/// Context passed to each connection-handler thread.
+const ConnContext = struct {
+    server: *HttpServer,
+    socket: posix.socket_t,
+    // Arena allocator per connection so we can free everything in one shot.
+    arena: std.heap.ArenaAllocator,
+
+    fn init(server: *HttpServer, socket: posix.socket_t) ConnContext {
+        return .{
+            .server = server,
+            .socket = socket,
+            .arena = std.heap.ArenaAllocator.init(server.allocator),
+        };
+    }
+
+    fn deinit(self: *ConnContext) void {
+        self.arena.deinit();
+    }
+};
 
 pub const HttpServer = struct {
     config: ServerConfig,
@@ -18,6 +39,8 @@ pub const HttpServer = struct {
     router: router.Router,
     middleware: middleware.Middleware,
     tls: Tls,
+    /// Set to true to request a graceful shutdown.
+    shutdown: std.atomic.Value(bool),
 
     pub fn init(allocator: std.mem.Allocator, config: ServerConfig) !HttpServer {
         if (logging.getGlobalLogger()) |logger| {
@@ -30,12 +53,10 @@ pub const HttpServer = struct {
         const listener = try posix.socket(address.any.family, tpe, protocol);
         errdefer posix.close(listener);
 
-        // Enable address reuse
         try posix.setsockopt(listener, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
         try posix.bind(listener, &address.any, address.getOsSockLen());
         try posix.listen(listener, config.backlog);
 
-        // Initialize TLS if configured
         var tls = try Tls.init(allocator, config.tls);
         errdefer tls.deinit();
 
@@ -54,6 +75,7 @@ pub const HttpServer = struct {
             .router = router.Router.init(allocator),
             .middleware = middleware.Middleware.init(allocator),
             .tls = tls,
+            .shutdown = std.atomic.Value(bool).init(false),
         };
     }
 
@@ -67,206 +89,182 @@ pub const HttpServer = struct {
         posix.close(self.listener);
     }
 
+    /// Signal the server to stop accepting new connections.
+    pub fn stop(self: *HttpServer) void {
+        self.shutdown.store(true, .release);
+        // Wake up the blocking accept() by closing the listener socket.
+        posix.close(self.listener);
+    }
+
+    /// Start accepting connections.  Each accepted connection is handled in its
+    /// own thread (thread-per-connection model) so that one slow request cannot
+    /// block others.
     pub fn start(self: *HttpServer) !void {
         if (logging.getGlobalLogger()) |logger| {
             const protocol = if (self.config.tls.enabled) "https" else "http";
             try logger.info("Server listening on {s}://{s}:{d}", .{ protocol, self.config.host, self.config.port });
         }
 
-        while (true) {
+        while (!self.shutdown.load(.acquire)) {
             var client_address: net.Address = undefined;
             var client_address_len: posix.socklen_t = @sizeOf(net.Address);
             const socket = posix.accept(self.listener, &client_address.any, &client_address_len, 0) catch |err| {
+                if (self.shutdown.load(.acquire)) break; // clean shutdown
                 if (logging.getGlobalLogger()) |logger| {
-                    try logger.err("Accept error: {any}", .{err});
+                    logger.err("Accept error: {any}", .{err}) catch {};
                 }
                 continue;
             };
-            defer posix.close(socket);
 
             if (logging.getGlobalLogger()) |logger| {
-                try logger.debug("Client connected from {any}", .{client_address});
+                logger.debug("Client connected from {any}", .{client_address}) catch {};
             }
-            try self.handleConnection(socket);
+
+            // Allocate the connection context on the heap so the thread owns it.
+            const ctx = self.allocator.create(ConnContext) catch |err| {
+                if (logging.getGlobalLogger()) |logger| {
+                    logger.err("OOM allocating ConnContext: {any}", .{err}) catch {};
+                }
+                posix.close(socket);
+                continue;
+            };
+            ctx.* = ConnContext.init(self, socket);
+
+            const thread = std.Thread.spawn(.{}, handleConnectionThread, .{ctx}) catch |err| {
+                if (logging.getGlobalLogger()) |logger| {
+                    logger.err("Failed to spawn thread: {any}", .{err}) catch {};
+                }
+                ctx.deinit();
+                self.allocator.destroy(ctx);
+                posix.close(socket);
+                continue;
+            };
+            thread.detach();
         }
     }
 
-    fn handleConnection(self: *HttpServer, socket: posix.socket_t) !void {
-        // Set socket timeouts
+    /// Entry point for each connection thread.  Owns and frees `ctx`.
+    fn handleConnectionThread(ctx: *ConnContext) void {
+        defer {
+            posix.close(ctx.socket);
+            ctx.deinit();
+            ctx.server.allocator.destroy(ctx);
+        }
+        ctx.server.handleConnection(ctx.arena.allocator(), ctx.socket) catch |err| {
+            if (logging.getGlobalLogger()) |logger| {
+                logger.err("Connection error: {any}", .{err}) catch {};
+            }
+        };
+    }
+
+    fn handleConnection(self: *HttpServer, allocator: std.mem.Allocator, socket: posix.socket_t) !void {
         try setTimeouts(socket, &self.config);
 
-        // Wrap socket with TLS if enabled
         const secured_socket = try self.tls.wrapSocket(socket);
 
-        // Start with initial buffer size, will reallocate if needed
-        var buf = try self.allocator.alloc(u8, self.config.buffer_size);
-        defer self.allocator.free(buf);
+        var buf = try allocator.alloc(u8, self.config.buffer_size);
 
-        // Read first chunk
         var total_read: usize = 0;
-        const read = self.tls.read(secured_socket, buf) catch |err| {
+        const first_read = self.tls.read(secured_socket, buf) catch |err| {
             if (logging.getGlobalLogger()) |logger| {
                 try logger.err("Error reading from socket: {any}", .{err});
             }
             return;
         };
 
-        if (read == 0) return; // Empty request
-        total_read = read;
+        if (first_read == 0) return;
+        total_read = first_read;
 
-        // Find where headers end (\r\n\r\n)
+        // ── Read until the header terminator is found ─────────────────────
         const header_end_marker = "\r\n\r\n";
         var header_end_pos: ?usize = null;
 
-        // Read until headers are complete
         while (header_end_pos == null) {
-            // Check bounds before searching for header end
-            if (total_read >= 4) { // Minimum length for \r\n\r\n
+            if (total_read >= 4) {
                 if (std.mem.indexOf(u8, buf[0..total_read], header_end_marker)) |pos| {
                     header_end_pos = pos;
                     break;
                 }
             }
 
-            // Check if we've exceeded max header size BEFORE reading more
             if (total_read >= self.config.max_header_size) {
-                const bad_request_response = Response.init(.request_header_fields_too_large, "text/plain", "Request Header Fields Too Large");
-                const formatted_response = bad_request_response.format() catch return;
-                defer std.heap.page_allocator.free(formatted_response);
-                _ = self.writeTls(secured_socket, formatted_response) catch {};
+                try self.sendSimpleError(allocator, secured_socket, .request_header_fields_too_large, "Request Header Fields Too Large");
                 return;
             }
 
-            // Check if buffer needs to grow
             if (total_read >= buf.len) {
-                // Calculate new size, but don't exceed max_header_size
                 const new_size = @min(buf.len * 2, self.config.max_header_size);
                 if (new_size <= buf.len) {
-                    // Can't grow buffer anymore, headers too large
-                    const bad_request_response = Response.init(.request_header_fields_too_large, "text/plain", "Request Header Fields Too Large");
-                    const formatted_response = bad_request_response.format() catch return;
-                    defer std.heap.page_allocator.free(formatted_response);
-                    _ = self.writeTls(secured_socket, formatted_response) catch {};
+                    try self.sendSimpleError(allocator, secured_socket, .request_header_fields_too_large, "Request Header Fields Too Large");
                     return;
                 }
-                buf = try self.allocator.realloc(buf, new_size);
+                buf = try allocator.realloc(buf, new_size);
             }
 
-            // Read more data
-            const additional_read = self.tls.read(secured_socket, buf[total_read..]) catch |err| {
+            const additional = self.tls.read(secured_socket, buf[total_read..]) catch |err| {
                 if (logging.getGlobalLogger()) |logger| {
                     try logger.err("Error reading additional data: {any}", .{err});
                 }
                 return;
             };
-
-            if (additional_read == 0) break; // No more data available
-            total_read += additional_read;
+            if (additional == 0) break;
+            total_read += additional;
         }
 
-        // Parse headers to get Content-Length
-        var temp_request = Request.init(self.allocator);
-        defer temp_request.deinit();
+        // ── Determine Content-Length without a full parse (#6 fix) ────────
+        // Scan for "Content-Length: " in the raw header bytes to avoid
+        // allocating a full Request just to read one header value.
+        const header_section = buf[0..@min(total_read, header_end_pos orelse total_read)];
+        var expected_body_len: usize = 0;
 
-        // Parse just to get headers (we'll re-parse with full body later)
-        temp_request.parse(buf[0..total_read]) catch |err| {
-            if (logging.getGlobalLogger()) |logger| {
-                try logger.err("Error parsing request headers: {any}", .{err});
-            }
+        if (findHeaderValue(header_section, "Content-Length")) |cl_str| {
+            expected_body_len = std.fmt.parseInt(usize, cl_str, 10) catch 0;
+        }
 
-            const bad_request_response = Response.init(.bad_request, "text/plain", "Bad Request - Invalid HTTP Request Format");
-            const formatted_response = bad_request_response.format() catch |fmt_err| {
-                if (logging.getGlobalLogger()) |logger| {
-                    try logger.err("Error formatting response: {any}", .{fmt_err});
-                }
-                return;
-            };
-            defer std.heap.page_allocator.free(formatted_response);
-
-            _ = self.writeTls(secured_socket, formatted_response) catch |write_err| {
-                if (logging.getGlobalLogger()) |logger| {
-                    try logger.err("Error writing error response: {any}", .{write_err});
-                }
-            };
-
-            return;
-        };
-
-        // Check if we need to read more for the body
-        const content_length_str = temp_request.headers.get("Content-Length");
-        if (content_length_str) |cl_str| {
-            const expected_body_len = std.fmt.parseInt(usize, cl_str, 10) catch 0;
-
-            // Calculate how much body we've already read
-            const header_len = if (header_end_pos) |pos| pos + header_end_marker.len else total_read;
+        if (expected_body_len > 0) {
+            const header_len = (header_end_pos orelse total_read) + header_end_marker.len;
             const current_body_len = if (total_read > header_len) total_read - header_len else 0;
 
             if (expected_body_len > current_body_len) {
-                // Need to read more body data
                 const remaining = expected_body_len - current_body_len;
+                const total_expected = header_len + expected_body_len;
 
-                // Check if total request size would exceed max_body_size
-                const total_expected_size = header_len + expected_body_len;
-                if (total_expected_size > self.config.max_body_size) {
-                    const bad_request_response = Response.init(.payload_too_large, "text/plain", "Payload Too Large");
-                    const formatted_response = bad_request_response.format() catch return;
-                    defer std.heap.page_allocator.free(formatted_response);
-                    _ = self.writeTls(secured_socket, formatted_response) catch {};
+                if (total_expected > self.config.max_body_size) {
+                    try self.sendSimpleError(allocator, secured_socket, .payload_too_large, "Payload Too Large");
                     return;
                 }
 
-                // Reallocate buffer if needed
                 const space_needed = std.math.add(usize, total_read, remaining) catch self.config.max_body_size;
-                const clamped_space_needed = @min(space_needed, self.config.max_body_size);
+                const clamped = @min(space_needed, self.config.max_body_size);
 
-                if (total_read + remaining > buf.len) {
-                    const new_size = @min(clamped_space_needed, self.config.max_body_size);
-                    buf = try self.allocator.realloc(buf, new_size);
+                if (clamped > buf.len) {
+                    buf = try allocator.realloc(buf, clamped);
                 }
 
-                // Read remaining body data
                 var body_read: usize = 0;
                 while (body_read < remaining) {
-                    const chunk_read = self.tls.read(secured_socket, buf[total_read + body_read ..]) catch |err| {
+                    const chunk = self.tls.read(secured_socket, buf[total_read + body_read ..]) catch |err| {
                         if (logging.getGlobalLogger()) |logger| {
                             try logger.err("Error reading body: {any}", .{err});
                         }
                         return;
                     };
-
-                    if (chunk_read == 0) break; // No more data available
-                    body_read += chunk_read;
+                    if (chunk == 0) break;
+                    body_read += chunk;
                 }
-
                 total_read += body_read;
             }
         }
 
-        // Now parse the complete request with all data
-        var request = Request.init(self.allocator);
-        defer request.deinit();
+        // ── Parse the complete request once ───────────────────────────────
+        var request = Request.init(allocator);
+        // No defer deinit — arena allocator will free everything at once.
 
         request.parse(buf[0..total_read]) catch |err| {
             if (logging.getGlobalLogger()) |logger| {
                 try logger.err("Error parsing request: {any}", .{err});
             }
-
-            const bad_request_response = Response.init(.bad_request, "text/plain", "Bad Request - Invalid HTTP Request Format");
-
-            const formatted_response = bad_request_response.format() catch |fmt_err| {
-                if (logging.getGlobalLogger()) |logger| {
-                    try logger.err("Error formatting response: {any}", .{fmt_err});
-                }
-                return;
-            };
-            defer std.heap.page_allocator.free(formatted_response);
-
-            _ = self.writeTls(secured_socket, formatted_response) catch |write_err| {
-                if (logging.getGlobalLogger()) |logger| {
-                    try logger.err("Error writing error response: {any}", .{write_err});
-                }
-            };
-
+            try self.sendSimpleError(allocator, secured_socket, .bad_request, "Bad Request - Invalid HTTP Request Format");
             return;
         };
 
@@ -274,118 +272,125 @@ pub const HttpServer = struct {
             try logger.debug("Processing request: {s} {s}", .{ @tagName(request.method), request.path });
         }
 
-        // Store metrics start time
         if (metrics.getGlobalMetrics()) |_| {
-            metrics.startRequestMetrics(&request) catch |err| {
-                if (logging.getGlobalLogger()) |logger| {
-                    try logger.err("Error starting metrics: {any}", .{err});
-                }
-            };
+            metrics.startRequestMetrics(&request) catch {};
         }
 
-        // Handle the request with error recovery
-        const response = self.handleRequest(&request) catch |err| {
+        var response = self.handleRequest(allocator, &request) catch |err| blk: {
             if (logging.getGlobalLogger()) |logger| {
-                try logger.err("Error handling request: {any}", .{err});
+                logger.err("Error handling request: {any}", .{err}) catch {};
             }
-
-            return Response.init(.internal_server_error, "text/plain", "Internal Server Error");
+            break :blk Response.init(.internal_server_error, "text/plain", "Internal Server Error");
         };
 
-        const formatted_response = response.format() catch |fmt_err| {
+        // Inject CORS headers if the middleware flagged this request.
+        if (request.getUserData("_cors_enabled", []const u8) != null) {
+            const cors_headers = cors.buildCorsHeaders(allocator) catch &.{};
+            if (cors_headers.len > 0) {
+                response = response.withHeaders(cors_headers);
+            }
+        }
+
+        const formatted = response.format(allocator) catch |err| {
             if (logging.getGlobalLogger()) |logger| {
-                try logger.err("Error formatting response: {any}", .{fmt_err});
+                try logger.err("Error formatting response: {any}", .{err});
             }
             return;
         };
-        defer std.heap.page_allocator.free(formatted_response);
 
         if (logging.getGlobalLogger()) |logger| {
             try logger.debug("Sending response: status={any}", .{response.status});
         }
 
-        // Try to write response with error recovery
-        self.writeTls(secured_socket, formatted_response) catch |err| {
+        self.writeTls(secured_socket, formatted) catch |err| {
             if (logging.getGlobalLogger()) |logger| {
                 try logger.err("Error writing response: {any}", .{err});
             }
             return;
         };
 
-        // Record metrics after sending response
-        metrics.recordResponseMetrics(&request, &response) catch |err| {
-            if (logging.getGlobalLogger()) |logger| {
-                try logger.err("Error recording metrics: {any}", .{err});
-            }
-        };
+        metrics.recordResponseMetrics(&request, &response) catch {};
     }
 
-    fn handleRequest(self: *HttpServer, request: *Request) !Response {
-        // Process middleware
-        if (self.middleware.process(request)) |response| {
-            return response;
+    fn handleRequest(self: *HttpServer, allocator: std.mem.Allocator, request: *Request) !Response {
+        _ = allocator;
+
+        if (self.middleware.process(request)) |resp| {
+            return resp;
         }
 
-        // Match route
-        if (self.router.matchRoute(request)) |response| {
-            return response;
+        // Try to match a route; also detect wrong-method to return 405 (#9 fix).
+        if (self.router.matchRoute(request)) |result| {
+            return result;
         }
 
-        return Response.init(
-            .not_found,
-            "text/plain",
-            "Not Found",
-        );
+        return Response.init(.not_found, "text/plain", "Not Found");
+    }
+
+    /// Send a minimal error response without a full Request parse cycle.
+    fn sendSimpleError(
+        self: *HttpServer,
+        allocator: std.mem.Allocator,
+        socket: posix.socket_t,
+        status: StatusCode,
+        message: []const u8,
+    ) !void {
+        const resp = Response.init(status, "text/plain", message);
+        const formatted = try resp.format(allocator);
+        self.writeTls(socket, formatted) catch {};
     }
 
     fn writeTls(self: *HttpServer, socket: posix.socket_t, msg: []const u8) !void {
         var pos: usize = 0;
         while (pos < msg.len) {
             const written = try self.tls.write(socket, msg[pos..]);
-            if (written == 0) {
-                return error.Closed;
-            }
+            if (written == 0) return error.Closed;
             pos += written;
         }
     }
 
-    // Add timeout handling
     fn setTimeouts(socket: posix.socket_t, config: *const ServerConfig) !void {
-        if (@import("builtin").os.tag == .windows) {
-            const read_timeout: u32 = @intCast(config.read_timeout_ms);
-            try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &std.mem.toBytes(read_timeout));
+        const read_timeout = posix.timeval{
+            .sec = @intCast(config.read_timeout_ms / 1000),
+            .usec = @intCast((config.read_timeout_ms % 1000) * 1000),
+        };
+        try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &std.mem.toBytes(read_timeout));
 
-            const write_timeout: u32 = @intCast(config.write_timeout_ms);
-            try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &std.mem.toBytes(write_timeout));
-        } else {
-            const read_timeout = posix.timeval{
-                .sec = @intCast(config.read_timeout_ms / 1000),
-                .usec = @intCast((config.read_timeout_ms % 1000) * 1000),
-            };
-            try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &std.mem.toBytes(read_timeout));
-
-            const write_timeout = posix.timeval{
-                .sec = @intCast(config.write_timeout_ms / 1000),
-                .usec = @intCast((config.write_timeout_ms % 1000) * 1000),
-            };
-            try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &std.mem.toBytes(write_timeout));
-        }
+        const write_timeout = posix.timeval{
+            .sec = @intCast(config.write_timeout_ms / 1000),
+            .usec = @intCast((config.write_timeout_ms % 1000) * 1000),
+        };
+        try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &std.mem.toBytes(write_timeout));
     }
 };
+
+/// Scan raw header bytes for a header value without a full parse.
+/// Returns the trimmed value slice, or null if not found.
+/// Handles both "Header: value" and "header: value" (case-insensitive name match).
+fn findHeaderValue(headers: []const u8, name: []const u8) ?[]const u8 {
+    var lines = std.mem.splitSequence(u8, headers, "\r\n");
+    _ = lines.next(); // skip request line
+    while (lines.next()) |line| {
+        if (line.len == 0) break;
+        if (std.mem.indexOf(u8, line, ": ")) |sep| {
+            const key = line[0..sep];
+            if (std.ascii.eqlIgnoreCase(key, name)) {
+                return std.mem.trim(u8, line[sep + 2 ..], " \t");
+            }
+        }
+    }
+    return null;
+}
 
 test "buffer overflow protection in header reading" {
     const testing = std.testing;
     const allocator = testing.allocator;
 
-    // Create a server with small max header size
     var config = ServerConfig.init("127.0.0.1", 8080);
-    config.max_header_size = 50; // Very small to test overflow protection
+    config.max_header_size = 50;
 
     var server = try HttpServer.init(allocator, config);
     defer server.deinit();
-
-    // This test would normally require a real socket, but we can test the bounds checking logic
-    // by examining the config values and ensuring they are properly validated
 
     try testing.expectEqual(@as(usize, 50), server.config.max_header_size);
 }
@@ -400,21 +405,16 @@ test "buffer size calculation" {
     var server = try HttpServer.init(allocator, config);
     defer server.deinit();
 
-    // Test that buffer size calculations work correctly
     const new_size = @min(@as(usize, 64) * 2, config.max_header_size);
-    try testing.expectEqual(@as(usize, 100), new_size); // Should be clamped to max_header_size
+    try testing.expectEqual(@as(usize, 100), new_size);
 }
 
 test "header size limit enforcement" {
     const testing = std.testing;
-
     var config = ServerConfig.init("127.0.0.1", 8080);
-    config.max_header_size = 10; // Very small limit
-
-    // Test that we can't create headers larger than the limit
-    // This is more of a config validation test
+    config.max_header_size = 10;
     try testing.expect(config.max_header_size > 0);
-    try testing.expect(config.max_header_size < 1000000); // Reasonable upper bound
+    try testing.expect(config.max_header_size < 1000000);
 }
 
 test "integer overflow protection in body reading" {
@@ -422,21 +422,19 @@ test "integer overflow protection in body reading" {
     const allocator = testing.allocator;
 
     var config = ServerConfig.init("127.0.0.1", 8080);
-    config.max_body_size = 1000; // Reasonable limit
+    config.max_body_size = 1000;
 
     var server = try HttpServer.init(allocator, config);
     defer server.deinit();
 
-    // Test that space_needed calculation doesn't overflow
     const total_read: usize = 100;
-    const remaining: usize = std.math.maxInt(usize) - 50; // Very large number
+    const remaining: usize = std.math.maxInt(usize) - 50;
 
-    // This should not overflow and should be clamped to max_body_size
     const space_needed = std.math.add(usize, total_read, remaining) catch config.max_body_size;
-    const clamped_space_needed = @min(space_needed, config.max_body_size);
+    const clamped = @min(space_needed, config.max_body_size);
 
-    try testing.expectEqual(config.max_body_size, clamped_space_needed);
-    try testing.expect(clamped_space_needed <= config.max_body_size);
+    try testing.expectEqual(config.max_body_size, clamped);
+    try testing.expect(clamped <= config.max_body_size);
 }
 
 test "buffer size calculations with large values" {
@@ -444,12 +442,11 @@ test "buffer size calculations with large values" {
     const allocator = testing.allocator;
 
     var config = ServerConfig.init("127.0.0.1", 8080);
-    config.max_body_size = 1024 * 1024; // 1MB limit
+    config.max_body_size = 1024 * 1024;
 
     var server = try HttpServer.init(allocator, config);
     defer server.deinit();
 
-    // Test various size calculations
     const test_cases = [_]struct {
         total_read: usize,
         remaining: usize,
@@ -460,13 +457,27 @@ test "buffer size calculations with large values" {
         .{ .total_read = 1000, .remaining = 1000, .expected_max = 2000 },
     };
 
-    for (test_cases) |test_case| {
-        const space_needed = std.math.add(usize, test_case.total_read, test_case.remaining) catch config.max_body_size;
+    for (test_cases) |tc| {
+        const space_needed = std.math.add(usize, tc.total_read, tc.remaining) catch config.max_body_size;
         const clamped = @min(space_needed, config.max_body_size);
-
         try testing.expect(clamped <= config.max_body_size);
-        if (test_case.expected_max <= config.max_body_size) {
-            try testing.expectEqual(test_case.expected_max, clamped);
+        if (tc.expected_max <= config.max_body_size) {
+            try testing.expectEqual(tc.expected_max, clamped);
         }
     }
+}
+
+test "findHeaderValue extracts content-length" {
+    const testing = std.testing;
+
+    const raw = "POST /api HTTP/1.1\r\nHost: localhost\r\nContent-Length: 42\r\nContent-Type: application/json\r\n";
+    const val = findHeaderValue(raw, "content-length");
+    try testing.expect(val != null);
+    try testing.expectEqualStrings("42", val.?);
+}
+
+test "findHeaderValue returns null for missing header" {
+    const testing = std.testing;
+    const raw = "GET / HTTP/1.1\r\nHost: localhost\r\n";
+    try testing.expect(findHeaderValue(raw, "Content-Length") == null);
 }

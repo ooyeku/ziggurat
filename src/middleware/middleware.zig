@@ -38,20 +38,71 @@ pub const Middleware = struct {
     }
 };
 
-test "Middleware process" {
-    // For standalone test, skip this test since it depends on real types
-    if (@import("builtin").is_test) {
-        // When running in test mode directly, skip this test
-        return error.SkipZigTest;
-    }
-
+test "Middleware process empty pipeline returns null" {
     const allocator = testing.allocator;
-    var middleware = Middleware.init(allocator);
-    defer middleware.deinit();
+    var mw = Middleware.init(allocator);
+    defer mw.deinit();
 
     var request = Request.init(allocator);
     defer request.deinit();
 
-    const response = middleware.process(&request);
-    try testing.expectEqual(response, null);
+    const response = mw.process(&request);
+    try testing.expectEqual(@as(?Response, null), response);
+}
+
+test "Middleware short-circuits on first non-null response" {
+    const allocator = testing.allocator;
+    var mw = Middleware.init(allocator);
+    defer mw.deinit();
+
+    const first = struct {
+        fn handler(_: *Request) ?Response {
+            return Response.init(.unauthorized, "text/plain", "denied");
+        }
+    }.handler;
+
+    const second = struct {
+        fn handler(_: *Request) ?Response {
+            // Should never be reached.
+            return Response.init(.ok, "text/plain", "ok");
+        }
+    }.handler;
+
+    try mw.add(first);
+    try mw.add(second);
+
+    var request = Request.init(allocator);
+    defer request.deinit();
+
+    const response = mw.process(&request);
+    try testing.expect(response != null);
+    try testing.expectEqual(@import("../http/response.zig").StatusCode.unauthorized, response.?.status);
+}
+
+test "Middleware continues when handler returns null" {
+    const allocator = testing.allocator;
+    var mw = Middleware.init(allocator);
+    defer mw.deinit();
+
+    const passthrough = struct {
+        fn handler(_: *Request) ?Response {
+            return null;
+        }
+    }.handler;
+
+    const terminal = struct {
+        fn handler(_: *Request) ?Response {
+            return Response.init(.ok, "text/plain", "reached");
+        }
+    }.handler;
+
+    try mw.add(passthrough);
+    try mw.add(terminal);
+
+    var request = Request.init(allocator);
+    defer request.deinit();
+
+    const response = mw.process(&request);
+    try testing.expect(response != null);
+    try testing.expectEqualStrings("reached", response.?.body);
 }

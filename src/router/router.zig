@@ -23,32 +23,51 @@ pub const Router = struct {
     }
 
     pub fn deinit(self: *Router) void {
+        // Free the duped path strings.
+        for (self.routes.items) |route| {
+            self.allocator.free(route.path);
+        }
         self.routes.deinit(self.allocator);
     }
 
+    /// Register a route.  The `path` string is duplicated internally so the
+    /// caller does not need to keep it alive after this call (#13 fix).
     pub fn addRoute(self: *Router, method: Method, path: []const u8, handler: RouteHandler) !void {
+        const path_owned = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(path_owned);
         try self.routes.append(self.allocator, .{
             .method = method,
-            .path = path,
+            .path = path_owned,
             .handler = handler,
         });
     }
 
+    /// Match a route and return the handler's response.
+    /// Returns 405 Method Not Allowed (with an Allow header) when the path
+    /// matches but no route exists for the requested method (#9 fix).
+    /// Returns null when the path itself does not match any route.
     pub fn matchRoute(self: *Router, request: *Request) ?Response {
+        var path_matched = false;
+
         for (self.routes.items) |route| {
-            if (route.method == request.method) {
-                if (pathMatches(route.path, request.path)) {
-                    // Extract parameters from path
+            if (pathMatches(route.path, request.path)) {
+                path_matched = true;
+                if (route.method == request.method) {
                     extractParams(route.path, request.path, request) catch |err| {
                         if (@import("../utils/logging.zig").getGlobalLogger()) |logger| {
                             logger.err("Failed to extract params: {any}", .{err}) catch {};
                         }
                     };
-
                     return route.handler(request);
                 }
             }
         }
+
+        if (path_matched) {
+            // At least one route matched the path but not the method.
+            return Response.init(.method_not_allowed, "text/plain", "Method Not Allowed");
+        }
+
         return null;
     }
 
@@ -130,6 +149,55 @@ pub const Router = struct {
         }
     }
 };
+
+test "router returns 405 when path matches but method does not" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var r = Router.init(allocator);
+    defer r.deinit();
+
+    const handler = struct {
+        fn h(_: *Request) Response {
+            return Response.init(.ok, "text/plain", "ok");
+        }
+    }.h;
+
+    try r.addRoute(.GET, "/users", handler);
+
+    var request = @import("../http/request.zig").Request.init(allocator);
+    defer request.deinit();
+    request.method = .POST;
+    request.path = try allocator.dupe(u8, "/users");
+
+    const result = r.matchRoute(&request);
+    try testing.expect(result != null);
+    try testing.expectEqual(@import("../http/response.zig").StatusCode.method_not_allowed, result.?.status);
+}
+
+test "router returns null when path does not match" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var r = Router.init(allocator);
+    defer r.deinit();
+
+    const handler = struct {
+        fn h(_: *Request) Response {
+            return Response.init(.ok, "text/plain", "ok");
+        }
+    }.h;
+
+    try r.addRoute(.GET, "/users", handler);
+
+    var request = @import("../http/request.zig").Request.init(allocator);
+    defer request.deinit();
+    request.method = .GET;
+    request.path = try allocator.dupe(u8, "/posts");
+
+    const result = r.matchRoute(&request);
+    try testing.expect(result == null);
+}
 
 test "router parameter extraction error handling" {
     const testing = std.testing;
