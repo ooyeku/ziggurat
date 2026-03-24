@@ -133,6 +133,12 @@ pub fn initGlobalLogger(allocator: std.mem.Allocator) !void {
     global_logger = try Logger.init(allocator);
 }
 
+pub fn deinitGlobalLogger() void {
+    global_logger_mutex.lock();
+    defer global_logger_mutex.unlock();
+    global_logger = null;
+}
+
 /// Thread-safe logger configuration functions
 pub fn setGlobalLogLevel(level: LogLevel) void {
     global_logger_mutex.lock();
@@ -161,47 +167,12 @@ pub fn setGlobalEnableTimestamp(enable: bool) void {
     }
 }
 
-/// Convenience functions that use the global logger
-pub fn debug(comptime format: []const u8, args: anytype) !void {
-    if (getGlobalLogger()) |logger| {
-        try logger.debug(format, args);
-    }
-}
-
-pub fn info(comptime format: []const u8, args: anytype) !void {
-    if (getGlobalLogger()) |logger| {
-        try logger.info(format, args);
-    }
-}
-
-pub fn warn(comptime format: []const u8, args: anytype) !void {
-    if (getGlobalLogger()) |logger| {
-        try logger.warn(format, args);
-    }
-}
-
-pub fn err(comptime format: []const u8, args: anytype) !void {
-    if (getGlobalLogger()) |logger| {
-        try logger.err(format, args);
-    }
-}
-
-pub fn critical(comptime format: []const u8, args: anytype) !void {
-    if (getGlobalLogger()) |logger| {
-        try logger.critical(format, args);
-    }
-}
-
 test "logger thread safety" {
     const allocator = std.testing.allocator;
 
     // Initialize global logger
     try initGlobalLogger(allocator);
-    defer {
-        global_logger_mutex.lock();
-        global_logger = null;
-        global_logger_mutex.unlock();
-    }
+    defer deinitGlobalLogger();
 
     // Test thread-safe configuration changes
     setGlobalLogLevel(.debug);
@@ -214,12 +185,11 @@ test "logger thread safety" {
     try std.testing.expectEqual(false, logger.?.enable_colors);
     try std.testing.expectEqual(false, logger.?.enable_timestamp);
 
-    // Test convenience functions
-    try info("Test info message", .{});
-    try debug("Test debug message", .{});
-    try warn("Test warning message", .{});
-    try err("Test error message", .{});
-    try critical("Test critical message", .{});
+    try logger.?.info("Test info message", .{});
+    try logger.?.debug("Test debug message", .{});
+    try logger.?.warn("Test warning message", .{});
+    try logger.?.err("Test error message", .{});
+    try logger.?.critical("Test critical message", .{});
 }
 
 test "global logger functions" {
@@ -227,11 +197,7 @@ test "global logger functions" {
 
     // Initialize global logger
     try initGlobalLogger(allocator);
-    defer {
-        global_logger_mutex.lock();
-        global_logger = null;
-        global_logger_mutex.unlock();
-    }
+    defer deinitGlobalLogger();
 
     // Test global logger functions
     setGlobalLogLevel(.debug);

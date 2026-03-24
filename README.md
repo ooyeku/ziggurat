@@ -1,6 +1,6 @@
 # Ziggurat
 
-A modern, lightweight HTTP server framework for Zig that prioritizes performance, safety, and developer experience. Version 1.2.0.
+A modern, lightweight HTTP server framework for Zig that prioritizes performance, safety, and developer experience. Version 2.0.0.
 
 [Zig 0.15.1](https://ziglang.org) | [MIT License](LICENSE)
 

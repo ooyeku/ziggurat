@@ -75,21 +75,24 @@ pub const Request = struct {
     /// Store arbitrary data on the request (used by middleware and router for
     /// path parameters, session data, etc.).
     pub fn setUserData(self: *Request, key: []const u8, value: anytype) !void {
-        // Convert value to an owned string.
         const value_str: []u8 = blk: {
             const T = @TypeOf(value);
             const info = @typeInfo(T);
-            // Accept []const u8, []u8, and string literals (*const [N:0]u8 / *const [N]u8)
             if (T == []const u8 or T == []u8) {
                 break :blk try self.allocator.dupe(u8, value);
             }
             if (info == .pointer) {
-                const child_info = @typeInfo(info.pointer.child);
+                const child = info.pointer.child;
+                const child_info = @typeInfo(child);
+                // *const [N]u8, *const [N:0]u8
                 if (child_info == .array and child_info.array.child == u8) {
                     break :blk try self.allocator.dupe(u8, value);
                 }
+                // [:0]const u8, [:0]u8
+                if (info.pointer.size == .slice and child == u8) {
+                    break :blk try self.allocator.dupe(u8, value);
+                }
             }
-            // Numeric, bool, and other types: format to string.
             var buf: [256]u8 = undefined;
             const s = try std.fmt.bufPrint(&buf, "{}", .{value});
             break :blk try self.allocator.dupe(u8, s);
@@ -99,10 +102,8 @@ pub const Request = struct {
         // Reuse existing key slot if present; free old value. Otherwise dupe key.
         const gop = try self.user_data.getOrPut(key);
         if (gop.found_existing) {
-            // Free old value (key memory is already owned).
             self.allocator.free(gop.value_ptr.*);
         } else {
-            // New entry: we must own the key.
             errdefer _ = self.user_data.remove(key);
             gop.key_ptr.* = try self.allocator.dupe(u8, key);
         }
@@ -174,7 +175,6 @@ pub const Request = struct {
 
             self.method = Method.fromString(method_part);
 
-            // Split path and query string at parse time (#10 fix).
             if (std.mem.indexOfScalar(u8, raw_path, '?')) |q| {
                 self.path = try self.allocator.dupe(u8, raw_path[0..q]);
                 self.query_string = try self.allocator.dupe(u8, raw_path[q + 1 ..]);
@@ -298,7 +298,6 @@ test "query string split from path at parse time" {
     defer request.deinit();
 
     try request.parse("GET /users?page=2&limit=10 HTTP/1.1\r\nHost: localhost\r\n\r\n");
-    // Path must not contain the query string.
     try testing.expectEqualStrings("/users", request.path);
     try testing.expectEqualStrings("page=2&limit=10", request.query_string);
     try testing.expectEqualStrings("2", request.getQuery("page").?);
@@ -358,11 +357,10 @@ test "getUserData type casting" {
     try request.setUserData("is_active", false);
     try testing.expectEqual(false, request.getUserData("is_active", bool).?);
 
-    // String retrieval of any stored value.
     try testing.expectEqualStrings("123", request.getUserData("user_id", []const u8).?);
 
-    // Invalid conversions return null.
-    try testing.expect(request.getUserData("score", u32) == null); // float stored as "95.5"
+    try testing.expect(request.getUserData("score", u32) == null);
+
     try testing.expect(request.getUserData("nonexistent", u32) == null);
 }
 

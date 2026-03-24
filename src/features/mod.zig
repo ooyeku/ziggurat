@@ -137,9 +137,13 @@ pub fn initialize(allocator: std.mem.Allocator, config: Config) !void {
         try error_handler_mod.initGlobalErrorHandler(allocator, config.errors.debug);
     }
 
-    // Initialize CORS
+    // Initialize CORS with the provided configuration.
     if (config.cors.enabled) {
-        try cors_mod.initGlobalCorsConfig(allocator);
+        try cors_mod.initGlobalCorsConfig(allocator, .{
+            .allow_all_origins = config.cors.allow_all_origins,
+            .allow_credentials = config.cors.allow_credentials,
+            .max_age = config.cors.max_age,
+        });
     }
 
     // Initialize sessions
@@ -153,13 +157,15 @@ pub fn initialize(allocator: std.mem.Allocator, config: Config) !void {
 
 /// Deinitialize all features
 pub fn deinitialize() void {
+    const logger_mod = @import("../utils/logging.zig");
     const metrics_mod = @import("../metrics.zig");
     const error_handler_mod = @import("../error/error_handler.zig");
     const cors_mod = @import("../middleware/cors.zig");
     const session_mod = @import("../middleware/session.zig");
 
-    metrics_mod.deinitGlobalMetrics();
-    error_handler_mod.deinitGlobalErrorHandler();
-    cors_mod.deinitGlobalCorsConfig();
     session_mod.deinitGlobalSessionManager();
+    cors_mod.deinitGlobalCorsConfig();
+    error_handler_mod.deinitGlobalErrorHandler();
+    metrics_mod.deinitGlobalMetrics();
+    logger_mod.deinitGlobalLogger();
 }

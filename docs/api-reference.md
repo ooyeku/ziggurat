@@ -1,6 +1,6 @@
 # Ziggurat API Reference
 
-Complete API documentation for Ziggurat v1.2.0.
+Complete API documentation for Ziggurat v2.0.0.
 
 ## APIs Overview
 

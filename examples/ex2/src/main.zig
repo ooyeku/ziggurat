@@ -34,8 +34,8 @@ pub fn main() !void {
     defer server.deinit();
 
     // Add middleware in order: logging -> CORS
-    try server.middleware(ziggurat.request_logger.requestLoggingMiddleware);
-    try server.middleware(ziggurat.cors.corsMiddleware);
+    try server.useMiddleware(ziggurat.request_logger.requestLoggingMiddleware);
+    try server.useMiddleware(ziggurat.cors.corsMiddleware);
 
     // Add routes
     try server.get("/", handleIndex);

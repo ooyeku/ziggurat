@@ -43,37 +43,24 @@ pub fn deinitGlobalSessionManager() void {
     global_session_manager_allocator = null;
 }
 
-/// Session middleware - loads session from cookie
+/// Session middleware - loads session from cookie or creates a new one.
 pub fn sessionMiddleware(request: *Request) ?Response {
-    if (global_session_manager) |manager| {
-        var session_id: ?[]const u8 = null;
+    const manager = global_session_manager orelse return null;
 
-        // Try to get session ID from cookie
-        if (request.headers.get("Cookie")) |cookie_header| {
-            session_id = cookie.getSessionCookie(request.allocator, cookie_header, SESSION_COOKIE_NAME);
-        }
-
-        if (session_id) |id| {
-            if (manager.getSession(id)) |_| {
-                // Store session reference in user_data
+    // Try to resume an existing session from the cookie.
+    if (request.headers.get("Cookie")) |cookie_header| {
+        if (cookie.getSessionCookie(request.allocator, cookie_header, SESSION_COOKIE_NAME)) |id| {
+            if (manager.getSession(id) != null) {
                 request.setUserData("_session_id", id) catch {};
-                request.setUserData("_session", id) catch {}; // Store session reference
                 return null;
             }
-
-            // Session not found or expired, create new one
-            if (manager.createSession()) |new_id| {
-                request.setUserData("_session_id", new_id) catch {};
-                return null;
-            } else |_| {}
-        } else {
-            // No session cookie, create new session
-            if (manager.createSession()) |new_id| {
-                request.setUserData("_session_id", new_id) catch {};
-                return null;
-            } else |_| {}
         }
     }
+
+    // No valid session found -- create a new one.
+    if (manager.createSession()) |new_id| {
+        request.setUserData("_session_id", new_id) catch {};
+    } else |_| {}
 
     return null;
 }

@@ -1,17 +1,21 @@
 const std = @import("std");
+const zon = @import("build.zig.zon");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-
     const optimize = b.standardOptimizeOption(.{});
+
+    // Expose the version from build.zig.zon as a build option so source
+    // code can reference it without hard-coding a second copy.
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", zon.version);
 
     const lib_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-
-    // Ziggurat is a library - no need for library artifact, just provide the module
+    lib_mod.addOptions("build_options", options);
 
     const ex1_mod = b.createModule(.{
         .root_source_file = b.path("examples/ex1/src/main.zig"),
@@ -68,6 +72,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     test_mod.addImport("ziggurat", lib_mod);
+    test_mod.addOptions("build_options", options);
 
     const unit_tests = b.addTest(.{
         .root_module = test_mod,

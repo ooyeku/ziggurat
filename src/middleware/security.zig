@@ -48,7 +48,7 @@ pub fn rateLimitMiddleware(request: *Request) ?Response {
         const client_id = "127.0.0.1";
 
         if (!limiter.isAllowed(client_id)) {
-            return Response.init(.request_timeout, "application/json", "{\"error\":\"rate_limited\"}");
+            return Response.init(.too_many_requests, "application/json", "{\"error\":\"rate_limited\"}");
         }
     }
 

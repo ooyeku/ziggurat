@@ -29,10 +29,14 @@
 //! ```
 
 const std = @import("std");
+const build_options = @import("build_options");
 const ServerConfig = @import("config/server_config.zig").ServerConfig;
 const HttpServer = @import("server/http_server.zig").HttpServer;
 const Request = @import("http/request.zig").Request;
 const Method = @import("http/request.zig").Method;
+
+/// Library version, sourced from build.zig.zon.
+pub const version: []const u8 = build_options.version;
 const Response = @import("http/response.zig").Response;
 const StatusCode = @import("http/response.zig").StatusCode;
 
@@ -138,12 +142,10 @@ pub const Server = struct {
         try self.inner.router.addRoute(.DELETE, path, h);
     }
 
-    /// Register a PATCH route handler (#22 fix).
     pub fn patch(self: *Self, path: []const u8, h: fn (*Request) Response) !void {
         try self.inner.router.addRoute(.PATCH, path, h);
     }
 
-    /// Register a HEAD route handler (#22 fix).
     pub fn head(self: *Self, path: []const u8, h: fn (*Request) Response) !void {
         try self.inner.router.addRoute(.HEAD, path, h);
     }
@@ -233,6 +235,31 @@ pub const ServerBuilder = struct {
         return self;
     }
 
+    pub fn threadPoolSize(self: *Self, size: u16) *Self {
+        self.server_config.thread_pool_size = size;
+        return self;
+    }
+
+    pub fn maxConnections(self: *Self, max: u16) *Self {
+        self.server_config.max_connections = max;
+        return self;
+    }
+
+    pub fn keepAliveTimeout(self: *Self, timeout_ms: u32) *Self {
+        self.server_config.keep_alive_timeout_ms = timeout_ms;
+        return self;
+    }
+
+    pub fn maxRequestsPerConnection(self: *Self, max: u16) *Self {
+        self.server_config.max_requests_per_connection = max;
+        return self;
+    }
+
+    pub fn drainTimeout(self: *Self, timeout_ms: u32) *Self {
+        self.server_config.drain_timeout_ms = timeout_ms;
+        return self;
+    }
+
     pub fn enableTls(self: *Self, cert_file: []const u8, key_file: []const u8) *Self {
         self.server_config.tls = @import("config/tls_config.zig").TlsConfig.enableTls(self.allocator, cert_file, key_file);
         return self;
@@ -258,8 +285,7 @@ pub const Status = struct {
     pub const unsupported_media_type = StatusCode.unsupported_media_type;
 };
 
-// ── Convenience helpers (thin wrappers; canonical implementations live in
-//    response.zig to avoid duplication — #21 fix) ───────────────────────────
+// ── Convenience helpers ──────────────────────────────────────────────────
 
 /// Create a successful JSON response.
 pub fn json(data: []const u8) Response {
@@ -308,6 +334,11 @@ test "server builder with TLS" {
     try testing.expect(builder.server_config.tls.enabled);
     try testing.expectEqualStrings("cert.pem", builder.server_config.tls.cert_file.?);
     try testing.expectEqualStrings("key.pem", builder.server_config.tls.key_file.?);
+}
+
+test "version is sourced from build.zig.zon" {
+    const testing = std.testing;
+    try testing.expectEqualStrings("2.0.0", version);
 }
 
 test "response helpers" {

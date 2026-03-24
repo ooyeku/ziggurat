@@ -44,9 +44,9 @@ pub fn main() !void {
     defer server.deinit();
 
     // Add middleware in order: logging -> sessions -> CORS -> security
-    try server.middleware(ziggurat.request_logger.requestLoggingMiddleware);
-    try server.middleware(ziggurat.session_middleware.sessionMiddleware);
-    try server.middleware(ziggurat.cors.corsMiddleware);
+    try server.useMiddleware(ziggurat.request_logger.requestLoggingMiddleware);
+    try server.useMiddleware(ziggurat.session_middleware.sessionMiddleware);
+    try server.useMiddleware(ziggurat.cors.corsMiddleware);
 
     // Add routes
     try server.get("/todos", handleListTodos);

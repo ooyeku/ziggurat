@@ -59,6 +59,7 @@ pub const ErrorHandlerConfig = struct {
 
 /// Global error handler
 var global_error_config: ?*ErrorHandlerConfig = null;
+var global_error_allocator: ?std.mem.Allocator = null;
 
 /// Initialize global error handler
 pub fn initGlobalErrorHandler(allocator: std.mem.Allocator, debug_mode: bool) !void {
@@ -69,6 +70,7 @@ pub fn initGlobalErrorHandler(allocator: std.mem.Allocator, debug_mode: bool) !v
     config.setDebugMode(debug_mode);
 
     global_error_config = config;
+    global_error_allocator = allocator;
 }
 
 /// Get global error config
@@ -80,8 +82,12 @@ pub fn getGlobalErrorConfig() ?*ErrorHandlerConfig {
 pub fn deinitGlobalErrorHandler() void {
     if (global_error_config) |config| {
         config.deinit();
+        if (global_error_allocator) |alloc| {
+            alloc.destroy(config);
+        }
     }
     global_error_config = null;
+    global_error_allocator = null;
 }
 
 /// Create a standardized error response

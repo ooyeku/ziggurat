@@ -224,23 +224,7 @@ pub fn deinitGlobalMetrics() void {
     }
 }
 
-/// Middleware function for recording request metrics
-pub fn metricsMiddleware(request: *http.Request) ?http.Response {
-    if (global_metrics_manager) |_| {
-        const metric = RequestMetric.init(
-            request.path,
-            @tagName(request.method),
-            200, // Status code will be updated after response
-        );
-
-        request.setUserData("metric_time", metric.start_time) catch {};
-        request.setUserData("metric_path", request.path) catch {};
-        request.setUserData("metric_method", @tagName(request.method)) catch {};
-    }
-    return null;
-}
-
-/// Function to be called at the start of request processing
+/// Store timing data at the start of request processing.
 pub fn startRequestMetrics(request: *http.Request) !void {
     if (global_metrics_manager) |_| {
         const metric = RequestMetric.init(

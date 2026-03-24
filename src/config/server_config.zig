@@ -11,6 +11,11 @@ pub const ServerConfig = struct {
     max_header_size: usize,
     max_body_size: usize,
     enable_keep_alive: bool,
+    keep_alive_timeout_ms: u32,
+    max_requests_per_connection: u16,
+    thread_pool_size: u16,
+    max_connections: u16,
+    drain_timeout_ms: u32,
     tls: TlsConfig,
 
     pub fn init(host: []const u8, port: u16) ServerConfig {
@@ -24,6 +29,11 @@ pub const ServerConfig = struct {
             .max_header_size = 8192,
             .max_body_size = 1024 * 1024, // 1MB
             .enable_keep_alive = true,
+            .keep_alive_timeout_ms = 15000,
+            .max_requests_per_connection = 100,
+            .thread_pool_size = 32,
+            .max_connections = 512,
+            .drain_timeout_ms = 30000,
             .tls = TlsConfig.disabled(),
         };
     }
