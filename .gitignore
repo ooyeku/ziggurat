@@ -7,3 +7,4 @@ static/
 cert.pem
 key.pem
 .idea/
+.DS_Store
